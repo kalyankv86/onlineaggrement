@@ -1,0 +1,737 @@
+openapi: 3.1.0
+info:
+  title: GTIDS Online Agreement Management & Digital Signing Portal
+  version: 1.1.0
+  description: |
+    Derived from SDD v1.0 §9 with the amendments in SDD v1.1 §B6.
+
+    Notable differences from SDD v1.0:
+      * `GET /verify/{agreementNumber}` is replaced by `GET /verify/{token}` — the
+        agreement number is sequential and would allow enumeration (DEC-006).
+      * Signing and approval requests carry `documentHash`, the hash the actor was
+        shown. A mismatch is refused (FR-027).
+      * `POST /esign/callback` requires a provider signature over the raw body and
+        is idempotent on the event id (DEC-010).
+      * `PATCH /agreements/{id}` completes the correction loop (FR-015a).
+  contact:
+    name: Gramtarang Inclusive Development Services
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://agreements-uat.gtids.example
+    description: UAT
+  - url: https://agreements.gtids.example
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Agreements
+  - name: Signing
+  - name: Templates
+  - name: Stamps
+  - name: Verification
+    description: Public, unauthenticated
+  - name: Reports
+  - name: Health
+
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate an internal user (FR-001)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  principal: { $ref: '#/components/schemas/Principal' }
+        '403':
+          description: |
+            Invalid credentials. The message is identical for an unknown email and
+            a wrong password, so login cannot be used to enumerate accounts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/party-access/redeem:
+    post:
+      tags: [Auth]
+      summary: Redeem a single-use external party link (DEC-003)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: A session scoped to exactly one agreement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  principal: { $ref: '#/components/schemas/Principal' }
+        '403': { description: Link is invalid, expired, or already used }
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: The current principal and its effective roles
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Principal' }
+
+  /api/v1/agreements:
+    post:
+      tags: [Agreements]
+      summary: Create an agreement in DRAFT (FR-002)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAgreement' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agreement' }
+        '422': { description: Missing required template variables }
+    get:
+      tags: [Agreements]
+      summary: List agreements
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/AgreementStatus' } }
+        - { name: agreementTypeId, in: query, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, maximum: 100, default: 25 } }
+      responses:
+        '200': { description: OK }
+
+  /api/v1/agreements/{id}:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements]
+      summary: Retrieve an agreement with parties, versions and available actions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgreementDetail' }
+        '404': { description: Not found }
+    patch:
+      tags: [Agreements]
+      summary: Edit a draft (FR-015a)
+      description: |
+        Permitted only while the agreement is DRAFT. Once generated, the document
+        is the record and the data beneath it is frozen (BR-005).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data: { type: object, additionalProperties: true }
+                placeOfExecutionState: { type: string }
+      responses:
+        '200': { description: Updated }
+        '409': { description: Not in DRAFT (BR-005) }
+
+  /api/v1/agreements/{id}/stamp:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Agreements, Stamps]
+      summary: Allocate a physical stamp paper (FR-005, FR-006)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stampId]
+              properties:
+                stampId: { type: string, format: uuid }
+      responses:
+        '201': { description: Allocated }
+        '409':
+          description: |
+            The stamp is not AVAILABLE, or was allocated concurrently. Enforced by a
+            partial unique index, so exactly one caller can win (BR-006).
+
+  /api/v1/agreements/{id}/generate:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Agreements]
+      summary: Generate the agreement PDF and reserve the three signature widgets (FR-009)
+      responses:
+        '201':
+          description: Generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentHash: { type: string, minLength: 64, maxLength: 64 }
+                  fileKey: { type: string }
+                  version: { type: integer }
+        '422': { description: Stamp required but not allocated }
+
+  /api/v1/agreements/{id}/sign/agent:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Signing]
+      summary: Begin the Agent signing ceremony (FR-011)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignRequest' }
+      responses:
+        '201':
+          description: Ceremony started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignInitiated' }
+        '409':
+          description: Stale document hash (FR-027) or invalid state
+
+  /api/v1/agreements/{id}/sign/md:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Signing]
+      summary: Begin the MD signing ceremony (FR-013)
+      description: Unreachable before employee approval — there is no such transition (BR-003).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignRequest' }
+      responses:
+        '201':
+          description: Ceremony started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignInitiated' }
+        '409': { description: Employee approval has not completed (BR-003) }
+
+  /api/v1/agreements/{id}/employee-approve:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Signing]
+      summary: Employee approval (FR-012)
+      description: |
+        An authenticated attested action, not an eSign signature (DEC-004). It
+        consumes no provider transaction and renders an attestation into the
+        reserved widget by incremental update, leaving the Agent signature valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignRequest' }
+      responses:
+        '201':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentHash: { type: string }
+        '409': { description: Agent has not signed (BR-002), or stale hash (FR-027) }
+
+  /api/v1/agreements/{id}/reject:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Signing]
+      summary: Reject with a mandatory reason (FR-015)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10 }
+      responses:
+        '201': { description: Rejected }
+        '400': { description: Reason absent or shorter than 10 characters }
+
+  /api/v1/agreements/{id}/correct:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Agreements]
+      summary: Open version N+1 on a rejected or expired agreement (FR-015a)
+      description: |
+        Prior signatures are voided — a corrected document is a different document.
+        Every prior version, hash and signature record is preserved. The stamp stays
+        allocated across the correction (FR-015b).
+      responses:
+        '201': { description: Version N+1 opened, status back to DRAFT }
+
+  /api/v1/agreements/{id}/cancel:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Agreements]
+      summary: Cancel with a mandatory reason
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string, minLength: 10 } }
+      responses:
+        '201': { description: Cancelled }
+
+  /api/v1/agreements/{id}/document:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements]
+      summary: Short-lived download URL for the current document version
+      description: URL expires in 5 minutes by default and every issuance is audited (SRS §12).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+                  documentHash: { type: string }
+                  signatureState: { $ref: '#/components/schemas/SignatureState' }
+
+  /api/v1/agreements/{id}/versions:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements]
+      summary: Every document version with its hash (FR-010)
+      responses: { '200': { description: OK } }
+
+  /api/v1/agreements/{id}/verify-signatures:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements]
+      summary: Re-validate every signature on the current document (SRS v1.1 §8.3)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationReport' }
+
+  /api/v1/agreements/{id}/audit:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements, Reports]
+      summary: Audit trail, transition history and chain integrity (FR-017, FR-025)
+      responses: { '200': { description: OK } }
+
+  /api/v1/agreements/{id}/qr:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    get:
+      tags: [Agreements, Verification]
+      summary: QR code for public verification (FR-019)
+      responses: { '200': { description: OK } }
+
+  /api/v1/agreements/{id}/party-access:
+    parameters: [{ $ref: '#/components/parameters/AgreementId' }]
+    post:
+      tags: [Auth]
+      summary: Issue a single-use external party link (DEC-003)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partyId]
+              properties: { partyId: { type: string, format: uuid } }
+      responses:
+        '201':
+          description: |
+            Issued. The token is returned once and never stored in the clear — only
+            its SHA-256 is persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+
+  /api/v1/esign/callback:
+    post:
+      tags: [Signing]
+      summary: Provider callback (FR-023, DEC-010)
+      security: []
+      description: |
+        The caller is the ESP, not a GTIDS principal. Authentication is the provider
+        signature over the **raw** request body, verified before the body is parsed.
+
+        Always answers 200. A provider that receives a 5xx retries indefinitely, and
+        the idempotency ledger already makes retries harmless.
+      parameters:
+        - { name: x-gtids-signature, in: header, required: true, schema: { type: string } }
+        - { name: x-gtids-timestamp, in: header, required: true, schema: { type: string } }
+        - { name: x-gtids-event-id, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transactionId: { type: string }
+                status: { type: string, enum: [SIGNED, FAILED, EXPIRED, CANCELLED] }
+                failureCode: { type: string }
+      responses:
+        '200':
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received: { type: boolean }
+                  outcome:
+                    type: string
+                    enum: [APPLIED, DUPLICATE, REJECTED_SIGNATURE, UNMATCHED, STALE]
+
+  /api/v1/stamps:
+    post:
+      tags: [Stamps]
+      summary: Register a physical stamp paper (FR-005)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [denomination, stateCode, scanBase64]
+              properties:
+                stampNumber: { type: string }
+                denomination: { type: number, exclusiveMinimum: 0 }
+                stateCode: { type: string, description: 'ISO 3166-2:IN subdivision' }
+                issueDate: { type: string, format: date }
+                vendor: { type: string }
+                scanBase64: { type: string, description: 'Max 10 MB decoded' }
+                scanContentType: { type: string, default: application/pdf }
+      responses:
+        '201': { description: Registered, with the SHA-256 of the scan }
+
+  /api/v1/stamps/available:
+    get:
+      tags: [Stamps]
+      summary: Available stamps by denomination and state
+      parameters:
+        - { name: denomination, in: query, schema: { type: number, default: 100 } }
+        - { name: stateCode, in: query, schema: { type: string } }
+      responses: { '200': { description: OK } }
+
+  /api/v1/templates/types:
+    get:
+      tags: [Templates]
+      summary: Active agreement types
+      responses: { '200': { description: OK } }
+
+  /api/v1/templates:
+    get:
+      tags: [Templates]
+      summary: List templates
+      parameters:
+        - { name: agreementTypeId, in: query, schema: { type: string, format: uuid } }
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Templates]
+      summary: Create a template (FR-003)
+      responses: { '201': { description: Created } }
+
+  /api/v1/templates/{id}/versions:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Templates]
+      summary: List versions
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Templates]
+      summary: Create a DRAFT version
+      description: |
+        Rejects content using variables that are not declared as required — an
+        undeclared placeholder would render as literal `{{name}}` in an executed
+        legal document.
+      responses:
+        '201': { description: Created }
+        '422': { description: Undeclared template variables }
+
+  /api/v1/templates/versions/{versionId}/approve:
+    parameters:
+      - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Templates]
+      summary: Approve a template version
+      description: |
+        Separation of duties — a version cannot be approved by its author. Only
+        APPROVED versions may be instantiated into agreements.
+      responses:
+        '201': { description: Approved }
+        '409': { description: Not DRAFT, or approver is the author }
+
+  /api/v1/verify/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string, minLength: 32, maxLength: 32 }
+    get:
+      tags: [Verification]
+      summary: Public verification by QR token (FR-019, BR-010)
+      security: []
+      description: |
+        Always answers 200, whether or not the token resolves — a 404 for a miss
+        would make this an existence oracle. Rate limited to 10 requests per minute
+        per IP. Exposes no party name, email, mobile, identity reference or stamp
+        detail.
+      responses:
+        '200':
+          description: Verification record, or `{ "found": false }`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicVerification' }
+
+  /api/v1/documents/download:
+    get:
+      tags: [Verification]
+      summary: Redeem a pre-signed download URL
+      security: []
+      parameters:
+        - { name: key, in: query, required: true, schema: { type: string } }
+        - { name: expires, in: query, required: true, schema: { type: integer } }
+        - { name: sig, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { description: The PDF, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        '403': { description: Link invalid or expired }
+
+  /api/v1/reports/agreements:
+    get: { tags: [Reports], summary: 'Agreement counts and completion times (FR-020)', responses: { '200': { description: OK } } }
+  /api/v1/reports/workflow-aging:
+    get: { tags: [Reports], summary: 'Where agreements are stuck, and how many are overdue', responses: { '200': { description: OK } } }
+  /api/v1/reports/signatures:
+    get: { tags: [Reports], summary: 'Signing outcomes and top failure codes', responses: { '200': { description: OK } } }
+  /api/v1/reports/stamps:
+    get: { tags: [Reports], summary: 'Stamp inventory and active allocations', responses: { '200': { description: OK } } }
+  /api/v1/reports/notifications:
+    get: { tags: [Reports], summary: 'Per-recipient delivery outcomes', responses: { '200': { description: OK } } }
+  /api/v1/reports/audit-integrity:
+    get: { tags: [Reports], summary: 'Audit chain integrity across the register (FR-025)', responses: { '200': { description: OK } } }
+
+  /api/v1/health:
+    get: { tags: [Health], summary: Liveness, security: [], responses: { '200': { description: OK } } }
+  /api/v1/health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness
+      security: []
+      description: Reports the active eSign provider, so a deployment still on the mock is visible.
+      responses: { '200': { description: OK } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    AgreementId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    AgreementStatus:
+      type: string
+      enum:
+        [DRAFT, READY_FOR_AGENT_SIGNATURE, AGENT_SIGNING, AGENT_SIGNED,
+         PENDING_EMPLOYEE_APPROVAL, EMPLOYEE_APPROVING, EMPLOYEE_APPROVED,
+         PENDING_MD_SIGNATURE, MD_SIGNING, COMPLETED, REJECTED, CANCELLED,
+         EXPIRED, SIGNATURE_FAILED]
+
+    SignatureState:
+      type: string
+      enum: [UNSIGNED, AGENT_SIGNED, EMPLOYEE_ATTESTED, FINAL]
+
+    Principal:
+      type: object
+      properties:
+        userId: { type: string }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [SUPER_ADMIN, AGREEMENT_ADMIN, AGENT, EMPLOYEE, MD, MD_DELEGATE, AUDITOR]
+        scopedAgreementId:
+          type: string
+          format: uuid
+          description: Present for external party sessions; access is limited to this agreement.
+
+    CreateAgreement:
+      type: object
+      required: [agreementTypeId, templateVersionId, data, parties]
+      properties:
+        agreementTypeId: { type: string, format: uuid }
+        templateVersionId: { type: string, format: uuid, description: Must be APPROVED }
+        placeOfExecutionState: { type: string }
+        data: { type: object, additionalProperties: true }
+        parties:
+          type: array
+          minItems: 3
+          description: Exactly one AGENT, one EMPLOYEE and one MD are required.
+          items:
+            type: object
+            required: [partyType, name, email]
+            properties:
+              partyType: { type: string, enum: [AGENT, EMPLOYEE, MD] }
+              userId: { type: string, format: uuid }
+              name: { type: string, minLength: 2 }
+              email: { type: string, format: email }
+              mobile: { type: string }
+              identityReference: { type: string, description: Masked reference only }
+
+    Agreement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        agreement_number: { type: string, example: GTIDS/2026-27/SVCAGR/000042 }
+        status: { $ref: '#/components/schemas/AgreementStatus' }
+        current_version: { type: integer }
+        expires_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+
+    AgreementDetail:
+      allOf:
+        - $ref: '#/components/schemas/Agreement'
+        - type: object
+          properties:
+            parties: { type: array, items: { type: object } }
+            versions: { type: array, items: { type: object } }
+            stamp: { type: object, nullable: true }
+            availableActions:
+              type: array
+              items: { type: string }
+              description: Derived from the transition table, so the UI never duplicates the rules.
+
+    SignRequest:
+      type: object
+      required: [documentHash]
+      properties:
+        documentHash:
+          type: string
+          minLength: 64
+          maxLength: 64
+          description: The hash the actor was shown. A mismatch is refused (FR-027).
+
+    SignInitiated:
+      type: object
+      properties:
+        transactionId: { type: string, format: uuid }
+        ceremonyUrl: { type: string, format: uri, description: Where to send the signer for Aadhaar OTP }
+        byteRangeDigest:
+          type: string
+          description: |
+            The digest sent to the ESP. Under the hash-based model this is the only
+            thing about the document that leaves GTIDS (DEC-002).
+
+    VerificationReport:
+      type: object
+      properties:
+        documentHash: { type: string }
+        signatureState: { $ref: '#/components/schemas/SignatureState' }
+        count: { type: integer }
+        allValid: { type: boolean }
+        signatures:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              signerCommonName: { type: string }
+              coversWholeFile:
+                type: boolean
+                description: |
+                  False for earlier signatures — they legitimately cover a prefix,
+                  because later revisions were appended after them.
+              valid: { type: boolean }
+              issues: { type: array, items: { type: string } }
+
+    PublicVerification:
+      type: object
+      properties:
+        found: { type: boolean }
+        agreementNumber: { type: string }
+        agreementType: { type: string }
+        status: { $ref: '#/components/schemas/AgreementStatus' }
+        completedAt: { type: string, format: date-time }
+        documentHash: { type: string }
+        signatures:
+          type: array
+          items:
+            type: object
+            properties:
+              party: { type: string, enum: [AGENT, EMPLOYEE, MD] }
+              signedAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                [NOT_FOUND, FORBIDDEN, INVALID_TRANSITION, CONFLICT, STALE_DOCUMENT,
+                 SIGNATURE_INTEGRITY, VALIDATION_FAILED, INTERNAL_ERROR]
+            message: { type: string }
+            rule:
+              type: string
+              description: The requirement or business rule the refusal enforces, e.g. BR-003.
+            details: { type: object, additionalProperties: true }
+        path: { type: string }
+        timestamp: { type: string, format: date-time }

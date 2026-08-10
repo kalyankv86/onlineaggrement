@@ -1,0 +1,45 @@
+[Unit]
+Description=GTIDS Agreement Portal — web UI
+After=network-online.target gtids-api.service
+Wants=network-online.target gtids-api.service
+
+[Service]
+Type=simple
+User=gtids
+Group=gtids
+WorkingDirectory=/opt/gtids-agreements/current/web
+EnvironmentFile=/etc/gtids/web.env
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -p 3101
+
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=append:/var/log/gtids/web.log
+StandardError=append:/var/log/gtids/web.log
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# The UI never touches the document store directly — it proxies to the API, which
+# is the only component holding storage credentials and authorisation logic.
+ReadWritePaths=/var/log/gtids /opt/gtids-agreements/current/web/.next/cache
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+[Unit]
+Description=GTIDS Agreement Portal — background worker
+Documentation=file:///opt/gtids-agreements/current/docs/RUNBOOK.md
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+Requires=postgresql.service redis-server.service
+# The worker is the only process that must never be run twice.
+# The document store is a NAS export. Starting before it is mounted would make
+# the API fail its storage check and flap; RequiresMountsFor makes systemd wait.
+RequiresMountsFor=/srv/gtids/agreements
+
+[Service]
+Type=simple
+User=gtids
+Group=gtids
+WorkingDirectory=/opt/gtids-agreements/current/api
+EnvironmentFile=/etc/gtids/api.env
+ExecStart=/usr/bin/node dist/worker.js
+
+# This process owns every scheduled job: notification dispatch, provider
+# reconciliation, the SLA sweep, and the daily audit-chain and document
+# integrity checks. Exactly one worker should run.
+Environment=RUN_SCHEDULER=true
+
+Restart=on-failure
+RestartSec=5s
+# If it cannot stay up for 5 tries in 2 minutes, stop and page someone rather
+# than restart-looping against a broken database or an unmounted NAS.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Give in-flight signing requests a chance to finish before the process dies.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=append:/var/log/gtids/worker.log
+StandardError=append:/var/log/gtids/worker.log
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# The only paths the service may write to.
+ReadWritePaths=/srv/gtids/agreements /var/log/gtids
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

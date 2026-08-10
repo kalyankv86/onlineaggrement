@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    name: API — typecheck, migrate, test
+    runs-on: ubuntu-latest
+
+    # Service containers, not local Docker. Development on the team's machines
+    # needs only Homebrew Postgres and Redis.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gtids_agreements_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gtids_agreements_test
+      MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gtids_agreements_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gtids_agreements_test
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Migrate
+        run: npm run migrate
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+      - name: Build
+        run: npm run build
+
+  web:
+    name: Web — typecheck and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      # The browser suite drives a live deployment (API + worker + web + Postgres +
+      # Redis). It is run against the UAT environment after deploy rather than here,
+      # where standing the whole stack up would triple CI time for little added signal
+      # over the API's own E2E suite.
+
+  gate:
+    name: Phase 2 gate — multi-signature PDF integrity (AC-10)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spike/pdf-signing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      # poppler-utils supplies pdfsig, the independent verifier. Without it the
+      # spike still runs, but the strongest assertion in it is skipped.
+      - name: Install poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - run: npm install
+      - name: Run the gate
+        run: node run.js

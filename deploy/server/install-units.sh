@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# Install the systemd units, nginx site and scheduled backup.
+#
+#   sudo ./install-units.sh
+#
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SITE="${SITE:-agreements.gtids.example}"
+APP_USER="${APP_USER:-gtids}"
+APP_HOME="${APP_HOME:-/opt/gtids-agreements}"
+
+[[ $EUID -eq 0 ]] || { echo "Run as root (sudo)." >&2; exit 1; }
+log() { printf '\033[32m==>\033[0m %s\n' "$1"; }
+fail() { printf '\033[31m!!!\033[0m %s\n' "$1" >&2; exit 1; }
+
+# The storage path is taken from the environment file rather than guessed. The
+# units must name the real mountpoint: RequiresMountsFor and ReadWritePaths both
+# depend on it, and a stale default would produce a service that either starts
+# before the NAS is mounted or cannot write to it at all.
+if [[ -f /etc/gtids/api.env ]]; then
+  STORAGE_ROOT="$(grep -E '^STORAGE_FS_ROOT=' /etc/gtids/api.env | cut -d= -f2- | tr -d '"')"
+fi
+STORAGE_ROOT="${STORAGE_ROOT:-/srv/gtids/agreements}"
+[[ "$STORAGE_ROOT" == /* ]] || fail "STORAGE_FS_ROOT must be an absolute path (got '$STORAGE_ROOT')"
+
+log "Installing systemd units (storage=$STORAGE_ROOT, home=$APP_HOME, user=$APP_USER)"
+for unit in "$HERE"/systemd/gtids-*.service; do
+  sed -e "s#/srv/gtids/agreements#${STORAGE_ROOT}#g" \
+      -e "s#/opt/gtids-agreements#${APP_HOME}#g" \
+      -e "s#^User=gtids\$#User=${APP_USER}#" \
+      -e "s#^Group=gtids\$#Group=${APP_USER}#" \
+      "$unit" > "/etc/systemd/system/$(basename "$unit")"
+  chmod 0644 "/etc/systemd/system/$(basename "$unit")"
+done
+
+log "Installing nginx configuration for $SITE"
+install -m 0644 "$HERE/nginx/gtids-proxy-params.conf" /etc/nginx/gtids-proxy-params.conf
+# server_name and the certificate paths must match the real hostname, or nginx
+# serves the default site and TLS never loads.
+sed "s#agreements\.gtids\.example#${SITE}#g" \
+  "$HERE/nginx/gtids-agreements.conf" > "/etc/nginx/sites-available/$SITE"
+chmod 0644 "/etc/nginx/sites-available/$SITE"
+ln -sfn "/etc/nginx/sites-available/$SITE" "/etc/nginx/sites-enabled/$SITE"
+rm -f /etc/nginx/sites-enabled/default
+
+# nginx will not start if the certificate is missing, which is the usual reason a
+# first install appears to hang. Say so before it happens.
+if [[ ! -f "/etc/letsencrypt/live/$SITE/fullchain.pem" ]]; then
+  printf '\033[33m!!!\033[0m %s\n' "No TLS certificate found for $SITE."
+  printf '\033[33m!!!\033[0m %s\n' "nginx will fail its config test until one exists. Obtain it with:"
+  printf '\033[33m!!!\033[0m %s\n' "  sudo certbot certonly --nginx -d $SITE"
+  printf '\033[33m!!!\033[0m %s\n' "or install your own CA-issued certificate at that path."
+fi
+
+log "Installing log rotation"
+cat > /etc/logrotate.d/gtids <<'EOF'
+/var/log/gtids/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 gtids gtids
+    sharedscripts
+    postrotate
+        # The services append to their log files directly; a restart is not
+        # wanted just to rotate, so copytruncate semantics are achieved by
+        # systemd reopening on SIGHUP where supported.
+        systemctl kill -s HUP gtids-api gtids-worker gtids-web 2>/dev/null || true
+    endscript
+}
+EOF
+
+log "Scheduling nightly backup"
+cat > /etc/systemd/system/gtids-backup.service <<EOF
+[Unit]
+Description=GTIDS Agreement Portal — nightly backup
+
+[Service]
+Type=oneshot
+ExecStart=$HERE/backup.sh
+EOF
+
+cat > /etc/systemd/system/gtids-backup.timer <<'EOF'
+[Unit]
+Description=GTIDS nightly backup
+
+[Timer]
+OnCalendar=*-*-* 01:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# Weekly restore verification. A backup nobody has restored is a hypothesis.
+cat > /etc/systemd/system/gtids-backup-verify.service <<EOF
+[Unit]
+Description=GTIDS backup restore verification
+
+[Service]
+Type=oneshot
+ExecStart=$HERE/backup.sh --verify-restore
+EOF
+
+cat > /etc/systemd/system/gtids-backup-verify.timer <<'EOF'
+[Unit]
+Description=GTIDS weekly restore verification
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+
+if nginx -t; then
+  systemctl reload nginx
+  log "nginx configuration valid and reloaded"
+else
+  echo "nginx configuration is invalid — fix before enabling the site." >&2
+  exit 1
+fi
+
+systemctl enable gtids-api gtids-worker gtids-web >/dev/null
+systemctl enable --now gtids-backup.timer gtids-backup-verify.timer >/dev/null
+
+log "Units installed and enabled (not started — deploy a release first)."
+cat <<EOF
+
+Then:
+  sudo $HERE/deploy.sh /path/to/checkout
+
+TLS is not configured by this script. Obtain a certificate for $SITE with your
+own CA or:
+  sudo certbot --nginx -d $SITE
+EOF
