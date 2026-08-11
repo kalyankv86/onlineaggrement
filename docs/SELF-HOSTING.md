@@ -186,6 +186,63 @@ sudo ./deploy/server/deploy.sh /opt/src/gtids-agreements
 
 ---
 
+## Installing before the NAS is available
+
+If the mount is scheduled for a later window, everything else can be provisioned,
+deployed and validated now. Two rules make that safe.
+
+**Use a different path for the interim.** Not the future mountpoint. If documents
+are written to `/srv/gtids/agreements` on local disk and the NAS is later mounted
+*there*, every one of them is shadowed by the mount — still on disk, unreachable,
+and the database holds hashes for files nobody can read. That is precisely the
+failure the marker file exists to prevent, arrived at from the other direction.
+
+**Run it as staging, not production.** `NODE_ENV=production` requires the marker
+and refuses to start without it — correctly. Staging skips that guard, which is
+right for validation and wrong for anything you need to keep.
+
+```bash
+# /etc/gtids/api.env — while the NAS is pending
+NODE_ENV=staging
+STORAGE_FS_ROOT=/var/lib/gtids/agreements-staging
+```
+
+```bash
+install -d -o gtids -g gtids -m 0750 /var/lib/gtids/agreements-staging
+./deploy/server/preflight.sh --staging     # NAS + provider checks advisory
+./deploy/server/deploy.sh /opt/src/gtids-agreements
+```
+
+In this state you can exercise the whole workflow, confirm the PDF pipeline and
+signatures, check mail delivery and train users. **Do not execute agreements you
+need to keep** — they are on local disk, outside the backup and retention policy.
+
+### Cutting over when the NAS arrives
+
+```bash
+systemctl stop gtids-api gtids-worker gtids-web
+
+mount /srv/gtids/agreements                       # per your fstab entry
+mountpoint /srv/gtids/agreements                  # must succeed
+sudo -u gtids touch /srv/gtids/agreements/.gtids-storage-root
+
+# Only if staging produced documents worth keeping:
+rsync -a --info=progress2 /var/lib/gtids/agreements-staging/ /srv/gtids/agreements/
+
+sed -i 's|^NODE_ENV=.*|NODE_ENV=production|' /etc/gtids/api.env
+sed -i 's|^STORAGE_FS_ROOT=.*|STORAGE_FS_ROOT=/srv/gtids/agreements|' /etc/gtids/api.env
+
+./deploy/server/preflight.sh                       # the real gate now
+systemctl start gtids-api gtids-worker gtids-web
+curl -s localhost:3100/api/v1/health/ready | jq
+```
+
+The file keys in the database are relative to the storage root, so a straight copy
+preserves them — no database change is needed. Verify afterwards with
+`/api/v1/reports/audit-integrity` and by opening a completed agreement.
+
+---
+
 ## The NAS is the part to get right
 
 Executed agreements are the record. Everything else can be rebuilt.
