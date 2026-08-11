@@ -15,7 +15,7 @@ export interface AppConfig {
    * server. There is no object-store service and no cloud provider — `fsRoot` is
    * the mountpoint.
    */
-  storage: { fsRoot: string; signedUrlTtlSeconds: number };
+  storage: { fsRoot: string; signedUrlTtlSeconds: number; requireMountpoint: boolean };
   auth: {
     jwtSecret: string;
     accessTtl: string;
@@ -62,6 +62,9 @@ export const configuration = (): AppConfig => ({
   storage: {
     fsRoot: str('STORAGE_FS_ROOT', './storage'),
     signedUrlTtlSeconds: num('STORAGE_SIGNED_URL_TTL_SECONDS', 300),
+    // On by default in production. Turning it off removes the protection against
+    // a marker file created by hand on local disk, so it is deliberately explicit.
+    requireMountpoint: str('STORAGE_REQUIRE_MOUNTPOINT', 'true') !== 'false',
   },
   auth: {
     jwtSecret: str('JWT_SECRET', 'dev-only-secret'),

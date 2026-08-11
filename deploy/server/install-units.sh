@@ -45,13 +45,29 @@ chmod 0644 "/etc/nginx/sites-available/$SITE"
 ln -sfn "/etc/nginx/sites-available/$SITE" "/etc/nginx/sites-enabled/$SITE"
 rm -f /etc/nginx/sites-enabled/default
 
-# nginx will not start if the certificate is missing, which is the usual reason a
-# first install appears to hang. Say so before it happens.
+# nginx refuses to load a site whose certificate is missing, and certbot's nginx
+# plugin needs the site loaded to prove the domain. Break that circle with a
+# self-signed placeholder so nginx starts; the real certificate replaces it.
 if [[ ! -f "/etc/letsencrypt/live/$SITE/fullchain.pem" ]]; then
-  printf '\033[33m!!!\033[0m %s\n' "No TLS certificate found for $SITE."
-  printf '\033[33m!!!\033[0m %s\n' "nginx will fail its config test until one exists. Obtain it with:"
-  printf '\033[33m!!!\033[0m %s\n' "  sudo certbot certonly --nginx -d $SITE"
-  printf '\033[33m!!!\033[0m %s\n' "or install your own CA-issued certificate at that path."
+  log "No TLS certificate for $SITE — generating a self-signed placeholder"
+  install -d -m 0755 /etc/ssl/gtids
+  openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+    -keyout "/etc/ssl/gtids/$SITE.key" -out "/etc/ssl/gtids/$SITE.crt" \
+    -subj "/CN=$SITE/O=Gramtarang Inclusive Development Services/C=IN" \
+    -addext "subjectAltName=DNS:$SITE" 2>/dev/null
+  chmod 0600 "/etc/ssl/gtids/$SITE.key"
+
+  sed -i \
+    -e "s#ssl_certificate     /etc/letsencrypt/live/$SITE/fullchain.pem;#ssl_certificate     /etc/ssl/gtids/$SITE.crt;#" \
+    -e "s#ssl_certificate_key /etc/letsencrypt/live/$SITE/privkey.pem;#ssl_certificate_key /etc/ssl/gtids/$SITE.key;#" \
+    -e "s#ssl_stapling on;#ssl_stapling off;#" \
+    -e "s#ssl_stapling_verify on;#ssl_stapling_verify off;#" \
+    "/etc/nginx/sites-available/$SITE"
+
+  printf '\033[33m!!!\033[0m %s\n' "Using a SELF-SIGNED certificate. Browsers will warn."
+  printf '\033[33m!!!\033[0m %s\n' "Replace it before go-live:"
+  printf '\033[33m!!!\033[0m %s\n' "  certbot --nginx -d $SITE"
+  printf '\033[33m!!!\033[0m %s\n' "or install your CA-issued certificate and point the site at it."
 fi
 
 log "Installing log rotation"

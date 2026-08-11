@@ -60,7 +60,7 @@ export class PdfVerifier {
 
       if (issues.length === 0) {
         try {
-          const der = Buffer.from(stripPadding(slot.hex), 'hex');
+          const der = extractDer(slot.hex);
           const content = Buffer.concat([
             pdf.subarray(slot.byteRange[0], slot.byteRange[0] + slot.byteRange[1]),
             pdf.subarray(slot.byteRange[2], slot.byteRange[2] + slot.byteRange[3]),
@@ -114,11 +114,40 @@ export class PdfVerifier {
   }
 }
 
-/** The /Contents gap is zero-padded to its reserved length; DER stops before that. */
-function stripPadding(hex: string): string {
+/**
+ * Extract the PKCS#7 from the zero-padded /Contents gap.
+ *
+ * The DER's own length header is read rather than trimming trailing zero bytes.
+ * Stripping zeroes looked equivalent and was not: a signature whose DER genuinely
+ * ends in 0x00 — which happens depending on the key and the timestamp — was being
+ * truncated, and the resulting structure parsed just far enough to verify the
+ * digest while losing the certificate. That produced a signature reported as
+ * valid but with no signer name, intermittently.
+ */
+function extractDer(hex: string): Buffer {
   const cleaned = hex.replace(/[^0-9A-Fa-f]/g, '');
-  const trimmed = cleaned.replace(/(00)+$/, '');
-  return trimmed.length % 2 === 0 ? trimmed : `${trimmed}0`;
+  const buf = Buffer.from(cleaned.length % 2 === 0 ? cleaned : `${cleaned}0`, 'hex');
+
+  if (buf.length < 2 || buf[0] !== 0x30) {
+    throw new Error('signature contents are not a DER SEQUENCE');
+  }
+
+  const lengthByte = buf[1];
+  let total: number;
+  if (lengthByte < 0x80) {
+    total = 2 + lengthByte; // short form
+  } else {
+    const lengthBytes = lengthByte & 0x7f;
+    if (lengthBytes === 0 || lengthBytes > 4 || buf.length < 2 + lengthBytes) {
+      throw new Error('signature contents have a malformed DER length');
+    }
+    let value = 0;
+    for (let i = 0; i < lengthBytes; i += 1) value = value * 256 + buf[2 + i];
+    total = 2 + lengthBytes + value;
+  }
+
+  if (total > buf.length) throw new Error('signature is truncated within its reserved gap');
+  return buf.subarray(0, total);
 }
 
 /**

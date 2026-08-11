@@ -109,9 +109,19 @@ if [[ -d "$STORAGE_ROOT" ]]; then
     gate "NOT a mountpoint — agreements would be written to the local disk"
   fi
 
-  # The guard against a silently unmounted share.
+  # The guard against a silently unmounted share — and against a fake guard.
   if [[ -f "$STORAGE_ROOT/.gtids-storage-root" ]]; then
-    ok "NAS marker file present"
+    if mountpoint -q "$STORAGE_ROOT"; then
+      ok "NAS marker file present"
+    else
+      # Worse than a missing marker: it satisfies the check while the share is
+      # absent, so the API starts and writes agreements to local disk. Mounting
+      # the export later hides them permanently.
+      no "marker exists but $STORAGE_ROOT is NOT mounted — this is a FALSE marker.
+    It defeats the very guard it represents. Remove it:
+      rm -f $STORAGE_ROOT/.gtids-storage-root
+    Create it only after the export is mounted."
+    fi
   else
     gate "marker .gtids-storage-root missing — the API will refuse to start in production"
   fi

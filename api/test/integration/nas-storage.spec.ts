@@ -14,12 +14,19 @@ jest.setTimeout(60_000);
  * the happy path — an unmounted share, a partially written file, a concurrent
  * write, a full volume. Those are the ways a legal document store loses evidence.
  */
-const makeDriver = (root: string, env: 'development' | 'production') =>
+const makeDriver = (
+  root: string,
+  env: 'development' | 'production',
+  // A temp directory is never a mountpoint, so most production-mode tests opt out
+  // of that specific check. The test that owns it turns it back on.
+  requireMountpoint = false,
+) =>
   new FilesystemStorageDriver({
     get: (key: string) =>
       ({
         'storage.fsRoot': root,
         'storage.signedUrlTtlSeconds': 300,
+        'storage.requireMountpoint': requireMountpoint,
         'auth.jwtSecret': 'test-secret',
         apiBaseUrl: 'http://localhost:3100',
         env,
@@ -73,6 +80,18 @@ describe('NAS-backed storage', () => {
         /Refusing to write/,
       );
       await expect(driver.exists('agreements/x.pdf')).resolves.toBe(false);
+    });
+
+    it('rejects a marker created by hand on local disk', async () => {
+      // The tempdir is on the same device as its parent, so it is not a mount —
+      // exactly the shape of a marker someone created while the NAS was pending.
+      await fs.writeFile(path.join(root, '.gtids-storage-root'), '');
+      const driver = makeDriver(root, 'production', true);
+
+      const health = await driver.health();
+      expect(health.ok).toBe(false);
+      expect(health.detail).toMatch(/not a mountpoint/);
+      await expect(driver.onModuleInit()).rejects.toThrow();
     });
 
     it('does not require the marker in development', async () => {
