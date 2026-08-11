@@ -1,7 +1,9 @@
-node_modules/
-.next/
-out/
+# Anchored: an unanchored pattern matches at any depth and can silently exclude
+# source directories that happen to share the name.
+/node_modules/
+/.next/
+/out/
+/test-results/
+/playwright-report/
 next-env.d.ts
 *.tsbuildinfo
-test-results/
-playwright-report/

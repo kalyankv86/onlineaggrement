@@ -1,7 +1,14 @@
-node_modules/
-dist/
-coverage/
-storage/
-.test-storage/
+# Paths are anchored with a leading slash on purpose.
+#
+# An unanchored `storage/` matches a directory of that name at ANY depth, which
+# silently excluded src/documents/storage/ — the NAS storage driver — from the
+# repository. The build then failed only on a fresh checkout, which is the worst
+# place to discover it.
+/node_modules/
+/dist/
+/coverage/
+/storage/
+/.test-storage/
+/demo-output/
 .env
 *.tsbuildinfo
