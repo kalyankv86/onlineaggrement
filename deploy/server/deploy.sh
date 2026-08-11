@@ -70,12 +70,29 @@ SOURCE="${1:-}"
 [[ -f /etc/gtids/api.env ]] || fail "/etc/gtids/api.env is missing. Run provision.sh first."
 
 # ── Pre-flight ───────────────────────────────────────────────────────────────
-STORAGE_ROOT="$(grep -E '^STORAGE_FS_ROOT=' /etc/gtids/api.env | cut -d= -f2-)"
-if [[ ! -f "$STORAGE_ROOT/.gtids-storage-root" ]]; then
-  fail "The NAS marker $STORAGE_ROOT/.gtids-storage-root is missing.
+STORAGE_ROOT="$(grep -E '^STORAGE_FS_ROOT=' /etc/gtids/api.env | cut -d= -f2- | tr -d '"')"
+DEPLOY_ENV="$(grep -E '^NODE_ENV=' /etc/gtids/api.env | cut -d= -f2- | tr -d '"')"
+
+if [[ "$DEPLOY_ENV" == "production" ]]; then
+  if [[ ! -f "$STORAGE_ROOT/.gtids-storage-root" ]]; then
+    fail "The NAS marker $STORAGE_ROOT/.gtids-storage-root is missing.
 The export is probably not mounted. Deploying now would produce a service that
 refuses to start — fix the mount first."
+  fi
+else
+  # Staging legitimately runs on local disk before the NAS window. The marker is
+  # a production requirement, so its absence here is expected — but say so, and
+  # refuse the one arrangement that destroys documents later.
+  printf '\033[33m!!!\033[0m %s\n' "NODE_ENV=$DEPLOY_ENV — deploying as staging, not production."
+  printf '\033[33m!!!\033[0m %s\n' "Documents go to $STORAGE_ROOT and are outside the NAS backup policy."
+  if [[ "$STORAGE_ROOT" == "/srv/gtids/agreements" ]] && ! mountpoint -q "$STORAGE_ROOT"; then
+    fail "Staging storage is the future NAS mountpoint and nothing is mounted there.
+Mounting the export later would hide every document written until then.
+Point STORAGE_FS_ROOT somewhere else, e.g. /var/lib/gtids/agreements-staging."
+  fi
 fi
+
+[[ -d "$STORAGE_ROOT" ]] || fail "Storage root $STORAGE_ROOT does not exist."
 
 RELEASE="$RELEASES/$(date -u +%Y%m%d-%H%M%S)"
 log "Building release $(basename "$RELEASE")"

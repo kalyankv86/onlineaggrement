@@ -45,6 +45,20 @@ chmod 0644 "/etc/nginx/sites-available/$SITE"
 ln -sfn "/etc/nginx/sites-available/$SITE" "/etc/nginx/sites-enabled/$SITE"
 rm -f /etc/nginx/sites-enabled/default
 
+# `http2 on;` as a standalone directive arrived in nginx 1.25.1. Ubuntu 22.04
+# ships 1.18, where HTTP/2 is a parameter of `listen` instead. Rewrite for older
+# builds rather than requiring a newer nginx.
+NGINX_VER="$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+if [[ -n "$NGINX_VER" ]] && \
+   [[ "$(printf '%s\n1.25.1\n' "$NGINX_VER" | sort -V | head -1)" != "1.25.1" ]]; then
+  log "nginx $NGINX_VER predates 'http2 on;' — using the listen-parameter form"
+  sed -i \
+    -e 's#^\( *\)listen 443 ssl;#\1listen 443 ssl http2;#' \
+    -e 's#^\( *\)listen \[::\]:443 ssl;#\1listen [::]:443 ssl http2;#' \
+    -e '/^ *http2 on;$/d' \
+    "/etc/nginx/sites-available/$SITE"
+fi
+
 # nginx refuses to load a site whose certificate is missing, and certbot's nginx
 # plugin needs the site loaded to prove the domain. Break that circle with a
 # self-signed placeholder so nginx starts; the real certificate replaces it.

@@ -87,8 +87,16 @@ if [[ -f "$ENV_FILE" ]]; then
   [[ "$perms" == "640" || "$perms" == "600" ]] \
     && ok "environment file mode $perms" \
     || no "environment file is mode $perms — it holds database and signing secrets"
-  [[ -z "$STORAGE_ROOT" ]] && \
-    STORAGE_ROOT="$(grep -E '^STORAGE_FS_ROOT=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+  # The environment file is what the service actually reads, so it wins over an
+  # ambient shell variable. Preferring the export made this report on a path the
+  # service was not using — which is exactly how a check gives false confidence.
+  env_root="$(grep -E '^STORAGE_FS_ROOT=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+  if [[ -n "$env_root" ]]; then
+    if [[ -n "$STORAGE_ROOT" && "$STORAGE_ROOT" != "$env_root" ]]; then
+      hmm "STORAGE_ROOT is exported as '$STORAGE_ROOT' but $ENV_FILE says '$env_root' — checking the latter"
+    fi
+    STORAGE_ROOT="$env_root"
+  fi
 else
   no "$ENV_FILE not found — run provision.sh"
 fi
