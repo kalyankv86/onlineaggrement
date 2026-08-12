@@ -54,6 +54,16 @@ else
   kv "current" "NOT PRESENT — deploy.sh has never completed a switch"
 fi
 
+sec "Database connectivity (as the service connects)"
+if [[ -f "$ENV_FILE" ]]; then
+  app_url="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+  if psql "$app_url" -tAc 'SELECT 1' >/dev/null 2>&1; then
+    kv "application role" "connects"
+  else
+    kv "application role" "CANNOT CONNECT — password in $ENV_FILE does not match the role"
+  fi
+fi
+
 sec "Document tooling"
 for t in tesseract pdftoppm soffice; do
   kv "$t" "$(command -v $t || echo 'NOT INSTALLED')"

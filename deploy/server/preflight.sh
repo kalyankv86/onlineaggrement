@@ -174,6 +174,25 @@ if [[ $STAGING -eq 1 && "$STORAGE_ROOT" == "/srv/gtids/agreements" ]] && ! mount
       STORAGE_FS_ROOT=/var/lib/gtids/agreements-staging"
 fi
 
+head_ "Database connectivity"
+if [[ -f "$ENV_FILE" ]]; then
+  # Connect exactly as the service does. A privilege check run as postgres looks
+  # healthy even when the application cannot authenticate at all.
+  app_url="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+  mig_url="$(grep -E '^MIGRATION_DATABASE_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+  if psql "$app_url" -tAc 'SELECT 1' >/dev/null 2>&1; then
+    ok "application role can connect with the configured password"
+  else
+    no "the application CANNOT connect with DATABASE_URL from $ENV_FILE.
+    Usually the role password and the environment file have diverged. Re-sync:
+      APP_PW=\$(grep -E '^DATABASE_URL=' $ENV_FILE | sed -E 's|.*://[^:]+:([^@]+)@.*|\\1|')
+      sudo -u postgres psql -c \"ALTER ROLE gtids_app LOGIN PASSWORD '\$APP_PW'\""
+  fi
+  psql "$mig_url" -tAc 'SELECT 1' >/dev/null 2>&1 \
+    && ok "migration role can connect" \
+    || no "the migration role cannot connect with MIGRATION_DATABASE_URL"
+fi
+
 head_ "Web configuration"
 if [[ -f /etc/gtids/web.env ]]; then
   web_env="$(grep -E '^NODE_ENV=' /etc/gtids/web.env | cut -d= -f2- | tr -d '"')"

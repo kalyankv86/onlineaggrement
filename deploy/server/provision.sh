@@ -107,8 +107,25 @@ fi
 
 # ── PostgreSQL ───────────────────────────────────────────────────────────────
 log "Configuring PostgreSQL"
-OWNER_PW="$(openssl rand -base64 30 | tr -d '/+=' | head -c 32)"
-APP_PW="$(openssl rand -base64 30 | tr -d '/+=' | head -c 32)"
+
+# Reuse the passwords already in the environment file.
+#
+# Generating fresh ones on every run rotated the roles while leaving api.env
+# untouched, so a re-run silently broke every database connection. The symptom
+# was a 500 on login and "password authentication failed for user gtids_app" in
+# the log — a long way from the cause. A script described as idempotent must not
+# invalidate the credentials the running service is using.
+if [[ -f /etc/gtids/api.env ]]; then
+  OWNER_PW="$(grep -E '^MIGRATION_DATABASE_URL=' /etc/gtids/api.env | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')"
+  APP_PW="$(grep -E '^DATABASE_URL=' /etc/gtids/api.env | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')"
+  [[ -n "$OWNER_PW" && -n "$APP_PW" ]] \
+    && log "Reusing the database passwords already in /etc/gtids/api.env" \
+    || fail "Could not read the database passwords from /etc/gtids/api.env.
+Fix that file, or move it aside to have this script generate a new one."
+else
+  OWNER_PW="$(openssl rand -base64 30 | tr -d '/+=' | head -c 32)"
+  APP_PW="$(openssl rand -base64 30 | tr -d '/+=' | head -c 32)"
+fi
 
 sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
 DO \$\$ BEGIN
@@ -212,8 +229,7 @@ EOF
   chown root:"$APP_USER" /etc/gtids/api.env
   chmod 0640 /etc/gtids/api.env
 else
-  warn "/etc/gtids/api.env exists — left untouched. Database passwords were rotated;"
-  warn "update DATABASE_URL and MIGRATION_DATABASE_URL by hand if you re-ran this."
+  log "/etc/gtids/api.env exists — left untouched (its passwords were reused above)"
 fi
 
 if [[ ! -f /etc/gtids/web.env ]]; then
