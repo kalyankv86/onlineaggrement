@@ -154,6 +154,9 @@ sudo -u "$APP_USER" bash -c "cd '$RELEASE/web' && npm ci --silent && npm run bui
 # ── Migrate ──────────────────────────────────────────────────────────────────
 # Run before the switch: the new code expects the new schema. Migrations here are
 # additive, so the old release keeps working if the switch is aborted.
+# Uses the compiled migrations produced by `npm run build:db` above. The release
+# tree has been pruned to production dependencies, so no TypeScript loader exists
+# and a .ts knexfile would fail here with a misleading "client is missing".
 log "Applying database migrations"
 sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && set -a && . /etc/gtids/api.env && set +a && npm run migrate" \
   || fail "Migrations failed — the running release is untouched."

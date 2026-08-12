@@ -167,6 +167,19 @@ if [[ $STAGING -eq 1 && "$STORAGE_ROOT" == "/srv/gtids/agreements" ]] && ! mount
       STORAGE_FS_ROOT=/var/lib/gtids/agreements-staging"
 fi
 
+head_ "Release build"
+if [[ -d /opt/gtids-agreements/current ]]; then
+  [[ -f /opt/gtids-agreements/current/api/dist/main.js ]] \
+    && ok "API build present" || hmm "no API build yet (deploy.sh has not run)"
+  # Production prunes the TypeScript toolchain, so migrations must be compiled.
+  [[ -d /opt/gtids-agreements/current/api/dist-db/migrations ]] \
+    && ok "compiled migrations present" \
+    || hmm "no compiled migrations (npm run build:db) — deploy.sh produces these"
+  [[ -d /opt/gtids-agreements/browsers ]] \
+    && ok "Chromium installed outside /home (visible under ProtectHome)" \
+    || hmm "Chromium not found at /opt/gtids-agreements/browsers — PDF rendering would fail"
+fi
+
 head_ "Network"
 ss -ltn 2>/dev/null | grep -q ':443 ' && ok "something is listening on 443" || hmm "nothing on 443 yet"
 for p in 3100 3101; do

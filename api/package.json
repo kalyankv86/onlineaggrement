@@ -5,13 +5,13 @@
   "description": "GTIDS Online Agreement Management & Digital Signing Portal — API",
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && npm run build:db",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:worker": "ts-node -r tsconfig-paths/register src/worker.ts",
-    "migrate": "knex --knexfile knexfile.ts migrate:latest",
-    "migrate:rollback": "knex --knexfile knexfile.ts migrate:rollback",
-    "seed": "knex --knexfile knexfile.ts seed:run",
+    "migrate": "knex --knexfile knexfile.cjs migrate:latest",
+    "migrate:rollback": "knex --knexfile knexfile.cjs migrate:rollback",
+    "seed": "knex --knexfile knexfile.cjs seed:run",
     "db:reset": "ts-node scripts/reset-db.ts && npm run migrate && npm run seed",
     "test": "jest --config jest.config.js",
     "test:unit": "jest --config jest.config.js --testPathPatterns=test/unit",
@@ -21,7 +21,8 @@
     "demo": "ts-node -T scripts/demo-workflow.ts",
     "deploy:local": "bash ../deploy/local/start.sh",
     "deploy:local:stop": "bash ../deploy/local/stop.sh",
-    "create-user": "ts-node -T src/scripts/create-user.ts"
+    "create-user": "ts-node -T src/scripts/create-user.ts",
+    "build:db": "tsc -p tsconfig.db.json"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

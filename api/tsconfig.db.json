@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-db",
+    "rootDir": ".",
+    "noEmit": false,
+    "declaration": false
+  },
+  "include": ["migrations/**/*.ts", "seeds/**/*.ts"],
+  "exclude": ["node_modules", "dist", "dist-db", "src", "test", "scripts"]
+}
