@@ -150,15 +150,19 @@ export async function seed(knex: Knex): Promise<void> {
         requires_identity_verification: false,
         requires_stamp: true,
         stamp_denomination: 100,
+        // DEC-025 — GTIDS supplies its own agreement document.
+        document_source: 'UPLOAD',
+        // DEC-028 — Accounts receives the completion copy.
+        accounts_email: 'accounts@gtids.example',
       })
       .onConflict('code')
-      .merge(['name', 'description'])
+      .merge(['document_source', 'accounts_email'])
       .returning('id');
 
-    // DEC-008 — SLA and reminder cadence for each stage that waits on a human.
+    // DEC-008 / DEC-024 — two stages now wait on a human.
     await trx('stage_slas')
       .insert(
-        ['READY_FOR_AGENT_SIGNATURE', 'PENDING_EMPLOYEE_APPROVAL', 'PENDING_MD_SIGNATURE'].map(
+        ['READY_FOR_AGENT_SIGNATURE', 'PENDING_MD_SIGNATURE'].map(
           (stage) => ({
             agreement_type_id: type.id,
             stage,

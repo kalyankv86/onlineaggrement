@@ -17,6 +17,7 @@ import { DocumentsModule } from './documents/documents.module';
 import { EsignModule } from './esign/esign.module';
 import { WorkflowService } from './workflow/workflow.service';
 import { StampsService } from './stamps/stamps.service';
+import { StampOcrService } from './stamps/stamp-ocr.service';
 import { StampsController } from './stamps/stamps.controller';
 import { AgreementsService } from './agreements/agreements.service';
 import { AgreementsController } from './agreements/agreements.controller';
@@ -69,6 +70,7 @@ import { HealthController } from './health/health.controller';
     AuthService,
     WorkflowService,
     StampsService,
+    StampOcrService,
     AgreementsService,
     TemplatesService,
     SigningService,

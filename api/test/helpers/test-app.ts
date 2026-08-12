@@ -194,11 +194,16 @@ export async function seedFixtures(knex: Knex): Promise<SeededFixtures> {
         name: 'Test Agreement',
         requires_stamp: true,
         stamp_denomination: 100,
+        // DEC-025 — GTIDS supplies its own agreement document.
+        document_source: 'UPLOAD',
+        // DEC-028 — Accounts receives the completion copy.
+        accounts_email: 'accounts@test.gtids',
       })
       .returning('*');
 
+    // DEC-024 — only two stages wait on a human now.
     await knex('stage_slas').insert(
-      ['READY_FOR_AGENT_SIGNATURE', 'PENDING_EMPLOYEE_APPROVAL', 'PENDING_MD_SIGNATURE'].map(
+      ['READY_FOR_AGENT_SIGNATURE', 'PENDING_MD_SIGNATURE'].map(
         (stage) => ({
           agreement_type_id: type.id,
           stage,
@@ -259,6 +264,32 @@ export async function waitFor<T>(
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`Timed out waiting for ${label} (last value: ${JSON.stringify(last)})`);
+}
+
+/**
+ * Stand-ins for the agreement document GTIDS supplies (DEC-025).
+ *
+ * Built with pdf-lib rather than hand-written PDF text: the composer loads them
+ * and copies their pages, so they must be structurally valid, not merely
+ * PDF-shaped.
+ */
+async function makeAgreementPdf(title: string): Promise<string> {
+  const { PDFDocument, StandardFonts } = await import('pdf-lib');
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([595.28, 841.89]);
+  page.drawText(title, { x: 60, y: 780, size: 14, font });
+  page.drawText('Supplied by GTIDS as its own document.', { x: 60, y: 750, size: 11, font });
+  return Buffer.from(await doc.save({ useObjectStreams: false })).toString('base64');
+}
+
+export let SAMPLE_AGREEMENT_BASE64 = '';
+export let SAMPLE_AGREEMENT_REV2_BASE64 = '';
+
+/** Called once by the E2E setup, before any upload. */
+export async function buildSampleAgreements(): Promise<void> {
+  SAMPLE_AGREEMENT_BASE64 = await makeAgreementPdf('SERVICE ENGAGEMENT AGREEMENT');
+  SAMPLE_AGREEMENT_REV2_BASE64 = await makeAgreementPdf('SERVICE ENGAGEMENT AGREEMENT (REVISED)');
 }
 
 /** Minimal base64 PDF, used as a stand-in stamp-paper scan. */

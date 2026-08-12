@@ -5,18 +5,20 @@ import { KNEX, Db } from '../common/database/database.module';
 import { sha256 } from '../common/util/crypto.util';
 import { NotFoundError, SignatureIntegrityError } from '../common/errors/domain.errors';
 import { PdfRenderer } from './pdf/renderer';
+import { DocumentComposer } from './pdf/composer';
 import { PdfPreparer, SIGNATURE_FIELDS } from './pdf/preparer';
 import { PdfVerifier, VerificationReport } from './pdf/verifier';
 import {
   prepareSignatureSlot,
   reopenSignatureSlot,
   embedSignature,
-  appendAttestation,
 } from './pdf/incremental-signer';
 import { StorageDriver, objectKey } from './storage/storage.driver';
 
 export type DocType =
   | 'STAMP_SCAN'
+  | 'UPLOADED_SOURCE'
+  | 'COMPOSED_UNSIGNED'
   | 'GENERATED_UNSIGNED'
   | 'PREPARED_UNSIGNED'
   | 'AGENT_SIGNED'
@@ -28,6 +30,8 @@ export type SignatureState = 'UNSIGNED' | 'AGENT_SIGNED' | 'EMPLOYEE_ATTESTED' |
 
 const FILE_NAME: Record<DocType, string> = {
   STAMP_SCAN: 'stamp-original.pdf',
+  UPLOADED_SOURCE: 'agreement-as-supplied.pdf',
+  COMPOSED_UNSIGNED: 'composed-unsigned.pdf',
   GENERATED_UNSIGNED: 'generated-unsigned.pdf',
   PREPARED_UNSIGNED: 'prepared-unsigned.pdf',
   AGENT_SIGNED: 'agent-signed.pdf',
@@ -59,6 +63,7 @@ export class DocumentsService {
   constructor(
     @Inject(KNEX) private readonly knex: Knex,
     private readonly renderer: PdfRenderer,
+    private readonly composer: DocumentComposer,
     private readonly preparer: PdfPreparer,
     private readonly verifier: PdfVerifier,
     private readonly storage: StorageDriver,
@@ -220,45 +225,51 @@ export class DocumentsService {
   }
 
   /**
-   * Employee approval attestation — an incremental update carrying an appearance
-   * stream, no eSign transaction (FR-012 / DEC-004).
+   * Build version N from an uploaded agreement (DEC-025, DEC-027).
+   *
+   * Converts Word to PDF if needed, puts the stamp scan first, then reserves the
+   * signature widgets. The uploaded file is stored unchanged alongside the
+   * composed document: with no template, that file is the only record of what
+   * GTIDS intended to execute.
    */
-  async applyAttestation(
+  async composeFromUpload(
     params: {
       agreementId: string;
       agreementNumber: string;
       version: number;
-      sourceFileKey: string;
-      lines: string[];
+      uploaded: Buffer;
+      filename: string;
+      contentType: string;
+      stampScan?: Buffer;
     },
     db: Db = this.knex,
-  ): Promise<StoredVersion & { report: VerificationReport }> {
-    const source = await this.storage.get(params.sourceFileKey);
-    const before = this.verifier.verify(source);
+  ): Promise<StoredVersion & { fontObjectNumber: number; pageCount: number; convertedFromWord: boolean }> {
+    const asPdf = await this.composer.toPdf(params.uploaded, params.filename, params.contentType);
+    const convertedFromWord = !asPdf.equals(params.uploaded);
 
-    const { buffer } = appendAttestation(source, {
-      fieldName: SIGNATURE_FIELDS.EMPLOYEE,
-      lines: params.lines,
-      fontObjectNumber: this.preparer.findFontObjectNumber(source),
-    });
-
-    // The attestation adds no signature, so the count must be unchanged and every
-    // existing signature must still verify.
-    let report: VerificationReport;
-    try {
-      report = this.verifier.assertIntegrityAfterSigning(buffer, before.count);
-    } catch (e) {
-      throw new SignatureIntegrityError((e as Error).message, {
-        agreementId: params.agreementId,
-        step: 'EMPLOYEE_ATTESTATION',
-      });
-    }
-
-    const stored = await this.store(
-      { ...params, doc: buffer, docType: 'EMPLOYEE_ATTESTED', signatureState: 'EMPLOYEE_ATTESTED' },
+    await this.store(
+      { ...params, doc: asPdf, docType: 'UPLOADED_SOURCE', signatureState: null },
       db,
     );
-    return { ...stored, report };
+
+    const composed = await this.composer.compose(asPdf, params.stampScan);
+    await this.store(
+      { ...params, doc: composed.buffer, docType: 'COMPOSED_UNSIGNED', signatureState: null },
+      db,
+    );
+
+    const prepared = await this.preparer.prepare(composed.buffer);
+    const stored = await this.store(
+      { ...params, doc: prepared.buffer, docType: 'PREPARED_UNSIGNED', signatureState: 'UNSIGNED' },
+      db,
+    );
+
+    return {
+      ...stored,
+      fontObjectNumber: prepared.fontObjectNumber,
+      pageCount: composed.pageCount,
+      convertedFromWord,
+    };
   }
 
   /** Store the stamp scan and hash it on upload (FR-005, SRS §7). */

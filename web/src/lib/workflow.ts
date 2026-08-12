@@ -13,9 +13,10 @@ export const STATUS_LABEL: Record<AgreementStatus, string> = {
   READY_FOR_AGENT_SIGNATURE: 'Awaiting agent signature',
   AGENT_SIGNING: 'Agent signing in progress',
   AGENT_SIGNED: 'Agent signed',
-  PENDING_EMPLOYEE_APPROVAL: 'Awaiting employee approval',
-  EMPLOYEE_APPROVING: 'Employee reviewing',
-  EMPLOYEE_APPROVED: 'Employee approved',
+  // Retained for agreements executed before DEC-024 changed the workflow.
+  PENDING_EMPLOYEE_APPROVAL: 'Awaiting employee approval (legacy)',
+  EMPLOYEE_APPROVING: 'Employee reviewing (legacy)',
+  EMPLOYEE_APPROVED: 'Employee approved (legacy)',
   PENDING_MD_SIGNATURE: 'Awaiting MD signature',
   MD_SIGNING: 'MD signing in progress',
   COMPLETED: 'Completed',
@@ -44,10 +45,14 @@ export const STATUS_TONE: Record<AgreementStatus, StatusTone> = {
   SIGNATURE_FAILED: 'danger',
 };
 
-/** The three mandated milestones, for the progress rail. */
+/**
+ * The mandated milestones (DEC-024). Two, not three — the Employee approval step
+ * was removed. Document preparation is shown as a step of its own because with
+ * uploaded agreements it is real work someone has to do, not an instant.
+ */
 export const MILESTONES = [
+  { key: 'PREPARED', label: 'Stamp & agreement attached' },
   { key: 'AGENT', label: 'Agent signs' },
-  { key: 'EMPLOYEE', label: 'Employee approves' },
   { key: 'MD', label: 'MD signs' },
 ] as const;
 
@@ -59,9 +64,6 @@ export function milestoneStates(status: AgreementStatus): MilestoneState[] {
     'READY_FOR_AGENT_SIGNATURE',
     'AGENT_SIGNING',
     'AGENT_SIGNED',
-    'PENDING_EMPLOYEE_APPROVAL',
-    'EMPLOYEE_APPROVING',
-    'EMPLOYEE_APPROVED',
     'PENDING_MD_SIGNATURE',
     'MD_SIGNING',
     'COMPLETED',
@@ -72,13 +74,18 @@ export function milestoneStates(status: AgreementStatus): MilestoneState[] {
   }
 
   const i = order.indexOf(status);
-  const at = (doneFrom: number, activeFrom: number): MilestoneState =>
-    i >= doneFrom ? 'done' : i >= activeFrom ? 'active' : 'pending';
-
   return [
-    at(order.indexOf('AGENT_SIGNED'), order.indexOf('READY_FOR_AGENT_SIGNATURE')),
-    at(order.indexOf('EMPLOYEE_APPROVED'), order.indexOf('PENDING_EMPLOYEE_APPROVAL')),
-    status === 'COMPLETED' ? 'done' : i >= order.indexOf('PENDING_MD_SIGNATURE') ? 'active' : 'pending',
+    i > order.indexOf('DRAFT') ? 'done' : 'active',
+    i >= order.indexOf('AGENT_SIGNED')
+      ? 'done'
+      : i >= order.indexOf('READY_FOR_AGENT_SIGNATURE')
+        ? 'active'
+        : 'pending',
+    status === 'COMPLETED'
+      ? 'done'
+      : i >= order.indexOf('PENDING_MD_SIGNATURE')
+        ? 'active'
+        : 'pending',
   ];
 }
 
@@ -90,7 +97,7 @@ export const AUDIT_LABEL: Record<string, string> = {
   STAMP_ALLOCATED: 'Stamp allocated',
   STAMP_RELEASED: 'Stamp released',
   STAMP_MARKED_USED: 'Stamp marked used',
-  AGREEMENT_GENERATED: 'Document generated',
+  AGREEMENT_GENERATED: 'Stamp and agreement composed',
   DOCUMENT_VIEWED: 'Document viewed',
   AGENT_SIGN_INITIATED: 'Agent signing started',
   AGENT_SIGNED: 'Agent signed',

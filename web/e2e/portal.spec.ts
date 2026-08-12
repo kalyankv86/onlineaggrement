@@ -17,10 +17,18 @@ const API = process.env.API_ORIGIN ?? 'http://localhost:3100';
 const USERS = {
   ops: 'ops@gtids.example',
   agent: 'agent@gtids.example',
-  employee: 'employee@gtids.example',
   md: 'md@gtids.example',
   auditor: 'auditor@gtids.example',
 };
+
+/** A minimal but structurally valid PDF, standing in for GTIDS's own agreement. */
+const AGREEMENT_PDF = Buffer.from(
+  '%PDF-1.4\n' +
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\n' +
+    'trailer<</Root 1 0 R>>\n%%EOF\n',
+);
 
 async function signIn(page: Page, email: string) {
   await page.goto('/login');
@@ -47,6 +55,60 @@ async function completeCeremony(page: Page, ceremonyUrl: string) {
   await ceremony.getByRole('button', { name: 'Sign with Aadhaar OTP' }).click();
   await expect(ceremony.locator('#out')).toContainText('SIGNED', { timeout: 20_000 });
   await ceremony.close();
+}
+
+/**
+ * Drives a fresh agreement all the way to PENDING_MD_SIGNATURE.
+ *
+ * Used by tests that need an agreement in that state without depending on one
+ * left behind by an earlier test — a dependency that silently turns them into
+ * skips once the shared agreement completes.
+ */
+async function agreementAwaitingMd(page: Page): Promise<string> {
+  await signIn(page, USERS.ops);
+  await page.goto('/stamps');
+  await page.getByLabel('Scan of the stamp paper').setInputFiles({
+    name: 'stamp.pdf',
+    mimeType: 'application/pdf',
+    buffer: AGREEMENT_PDF,
+  });
+  await page.getByRole('button', { name: 'Read the scan' }).click();
+  await expect(page.getByText('Check these before saving')).toBeVisible({ timeout: 60_000 });
+  await page.getByLabel(/Stamp \/ certificate number/).fill(`UI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  await page.getByLabel('Issuing state').fill('IN-OR');
+  await page.getByRole('button', { name: 'Confirm and register' }).click();
+  await expect(page.getByText('Registered.')).toBeVisible({ timeout: 20_000 });
+  await signOut(page);
+
+  await signIn(page, USERS.agent);
+  await page.goto('/agreements/new');
+  await page.getByLabel('Agent full name').fill('Ramesh Kumar');
+  await page.getByLabel('Agent email').fill(USERS.agent);
+  await page.getByLabel('Managing Director full name').fill('Dr. A. K. Mohanty');
+  await page.getByLabel('Managing Director email').fill(USERS.md);
+  await page.getByRole('button', { name: 'Create draft agreement' }).click();
+  await page.waitForURL(/\/agreements\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  const url = page.url();
+
+  await page.getByRole('button', { name: 'Allocate stamp' }).click();
+  await expect(page.getByLabel('Your agreement document')).toBeEnabled({ timeout: 20_000 });
+  await page.getByLabel('Your agreement document').setInputFiles({
+    name: 'agreement.pdf',
+    mimeType: 'application/pdf',
+    buffer: AGREEMENT_PDF,
+  });
+  await page.getByRole('button', { name: 'Attach and compose' }).click();
+  await expect(page.getByText('Awaiting agent signature')).toBeVisible({ timeout: 60_000 });
+
+  await page.getByRole('button', { name: 'Sign as Agent' }).click();
+  const link = page.getByRole('link', { name: /Continue to eSign provider/ });
+  await expect(link).toBeVisible({ timeout: 30_000 });
+  await completeCeremony(page, (await link.getAttribute('href'))!);
+  await page.reload();
+  await expect(page.getByText('Awaiting MD signature')).toBeVisible({ timeout: 30_000 });
+
+  await signOut(page);
+  return url;
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -76,21 +138,22 @@ test.describe('GTIDS Agreement Portal', () => {
     await page.goto('/stamps');
     await expect(page.getByRole('heading', { name: 'Stamp inventory' })).toBeVisible();
 
-    const stampNumber = `UI-${Date.now()}`;
-    await page.getByLabel('Stamp / certificate number').fill(stampNumber);
-    await page.getByLabel('Issuing state').fill('IN-OR');
-    await page.getByLabel('Vendor').fill('Treasury, Bhubaneswar');
+    // DEC-026 — read the scan first, then confirm what it read.
     await page.getByLabel('Scan of the stamp paper').setInputFiles({
       name: 'stamp.pdf',
       mimeType: 'application/pdf',
-      buffer: Buffer.from(
-        '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
-          '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n' +
-          '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 300]>>endobj\n' +
-          'trailer<</Root 1 0 R>>\n%%EOF\n',
-      ),
+      buffer: AGREEMENT_PDF,
     });
-    await page.getByRole('button', { name: 'Register stamp paper' }).click();
+    await page.getByRole('button', { name: 'Read the scan' }).click();
+
+    // OCR proposes; nothing is saved until a person confirms.
+    await expect(page.getByText('Check these before saving')).toBeVisible({ timeout: 60_000 });
+
+    const stampNumber = `UI-${Date.now()}`;
+    await page.getByLabel(/Stamp \/ certificate number/).fill(stampNumber);
+    await page.getByLabel('Issuing state').fill('IN-OR');
+    await page.getByLabel('Vendor').fill('Treasury, Bhubaneswar');
+    await page.getByRole('button', { name: 'Confirm and register' }).click();
 
     await expect(page.getByText('Registered.')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('cell', { name: stampNumber })).toBeVisible();
@@ -103,22 +166,19 @@ test.describe('GTIDS Agreement Portal', () => {
     await page.getByLabel('State of execution').fill('IN-OR');
     await page.getByLabel('Date of execution').fill('2026-08-10');
     await page.getByLabel('Place of execution').fill('Bhubaneswar, Odisha');
-    await page.getByLabel('Agent name (as it appears in the deed)').fill('Ramesh Kumar');
-    await page.getByLabel('Services to be provided').fill('community mobilisation services');
+    // Particulars are record-keeping for an UPLOAD type (DEC-025), so the labels
+    // describe the register entry rather than deed text.
+    await page.getByLabel('Counterparty name').fill('Ramesh Kumar');
+    await page.getByLabel('Subject of the agreement').fill('community mobilisation services');
     await page.getByLabel('Term (months)').fill('12');
     await page.getByLabel('Commencement date').fill('2026-09-01');
     await page.getByLabel('Consideration').fill('Rs. 4,50,000');
 
-    const parties = [
-      { heading: /^Agent —/, name: 'Ramesh Kumar', email: USERS.agent },
-      { heading: /^Employee —/, name: 'Sunita Patnaik', email: USERS.employee },
-      { heading: /^Managing Director —/, name: 'Dr. A. K. Mohanty', email: USERS.md },
-    ];
-    for (const p of parties) {
-      const block = page.locator('div').filter({ has: page.getByRole('heading', { name: p.heading }) }).last();
-      await block.getByLabel('Full name').fill(p.name);
-      await block.getByLabel('Email').fill(p.email);
-    }
+    // Labels are party-specific, so no container scoping is needed.
+    await page.getByLabel('Agent full name').fill('Ramesh Kumar');
+    await page.getByLabel('Agent email').fill(USERS.agent);
+    await page.getByLabel('Managing Director full name').fill('Dr. A. K. Mohanty');
+    await page.getByLabel('Managing Director email').fill(USERS.md);
 
     await page.getByRole('button', { name: 'Create draft agreement' }).click();
     await page.waitForURL(/\/agreements\/[0-9a-f-]{36}$/, { timeout: 30_000 });
@@ -130,25 +190,32 @@ test.describe('GTIDS Agreement Portal', () => {
 
     // Stamp, then generate.
     await page.getByRole('button', { name: 'Allocate stamp' }).click();
-    // Once allocated, the picker disappears and the stamp panel shows the detail.
-    await expect(page.getByText('Rs. 100.00')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole('heading', { name: 'Allocate stamp paper' })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Generate agreement document' }).click();
-    await expect(page.getByText('Awaiting agent signature')).toBeVisible({ timeout: 30_000 });
+    // Once allocated the picker disappears, the stamp panel shows the detail, and
+    // the agreement upload becomes available — the stamp scan is page 1, so it
+    // has to come first (DEC-027).
+    await expect(page.getByRole('heading', { name: 'Allocate stamp paper' })).toHaveCount(0, {
+      timeout: 20_000,
+    });
+    const stampPanel = page.locator('.card').filter({
+      has: page.getByRole('heading', { name: 'Stamp paper', exact: true }),
+    });
+    await expect(stampPanel.getByText('Rs. 100.00')).toBeVisible();
+    await expect(page.getByLabel('Your agreement document')).toBeEnabled();
+
+    // DEC-025 / DEC-027 — attach GTIDS's own agreement; the stamp scan becomes page 1.
+    await page.getByLabel('Your agreement document').setInputFiles({
+      name: 'service-agreement.pdf',
+      mimeType: 'application/pdf',
+      buffer: AGREEMENT_PDF,
+    });
+    await page.getByRole('button', { name: 'Attach and compose' }).click();
+
+    await expect(page.getByText('Awaiting agent signature')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByRole('link', { name: /Open document/ })).toBeVisible();
   });
 
-  test('the employee cannot approve before the agent has signed (BR-002)', async ({ page }) => {
-    await signIn(page, USERS.employee);
-    await page.goto(agreementUrl);
-    // The rule is structural: with no edge in the transition table, the API
-    // reports no available action, so the button is not offered at all.
-    await expect(page.getByRole('button', { name: 'Approve this agreement' })).toHaveCount(0);
-    await expect(page.getByText('Nothing is waiting on you at this stage.')).toBeVisible();
-  });
-
-  test('the MD cannot sign before approval (BR-003)', async ({ page }) => {
+  test('the MD cannot sign before the agent has (BR-003, DEC-024)', async ({ page }) => {
     await signIn(page, USERS.md);
     await page.goto(agreementUrl);
     await expect(page.getByRole('button', { name: 'Sign as Managing Director' })).toHaveCount(0);
@@ -167,21 +234,8 @@ test.describe('GTIDS Agreement Portal', () => {
     await completeCeremony(page, ceremonyUrl!);
 
     await page.reload();
-    await expect(page.getByText('Awaiting employee approval')).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('1 applied')).toBeVisible();
-    await expect(page.getByText('all valid')).toBeVisible();
-  });
-
-  test('the employee approves, and the agent signature survives it', async ({ page }) => {
-    await signIn(page, USERS.employee);
-    await page.goto(agreementUrl);
-
-    // The employee is shown the agent-signed document before approving.
-    await expect(page.getByText('1 applied')).toBeVisible();
-    await page.getByRole('button', { name: 'Approve this agreement' }).click();
-
     await expect(page.getByText('Awaiting MD signature')).toBeVisible({ timeout: 30_000 });
-    // The attestation was appended, not re-rendered — signature 1 still verifies.
+    await expect(page.getByText('1 applied')).toBeVisible();
     await expect(page.getByText('all valid')).toBeVisible();
   });
 
@@ -217,9 +271,8 @@ test.describe('GTIDS Agreement Portal', () => {
     for (const event of [
       'Agreement created',
       'Stamp allocated',
-      'Document generated',
+      'Stamp and agreement composed',
       'Agent signed',
-      'Employee approved',
       'MD signed',
       'Agreement completed',
     ]) {
@@ -241,7 +294,7 @@ test.describe('GTIDS Agreement Portal', () => {
     await expect(page.getByText('Fully executed by all three parties.')).toBeVisible();
 
     const html = await page.content();
-    for (const secret of ['Ramesh Kumar', 'Sunita Patnaik', 'gtids.example']) {
+    for (const secret of ['Ramesh Kumar', 'Dr. A. K. Mohanty', 'gtids.example']) {
       expect(html).not.toContain(secret);
     }
 
@@ -263,17 +316,12 @@ test.describe('GTIDS Agreement Portal', () => {
   });
 
   test('rejection requires a substantive reason (FR-015)', async ({ page }) => {
-    // A fresh agreement taken to the approval stage, then rejected.
-    await signIn(page, USERS.employee);
-    await page.goto('/agreements?status=PENDING_EMPLOYEE_APPROVAL');
-    const pending = page.locator('td a.mono').first();
+    // Rejection belongs to the MD now (DEC-024). The agreement is built here so
+    // the test never depends on one left over from an earlier test.
+    const url = await agreementAwaitingMd(page);
+    await signIn(page, USERS.md);
+    await page.goto(url);
 
-    if ((await pending.count()) === 0) {
-      test.skip(true, 'no agreement is awaiting approval');
-      return;
-    }
-
-    await pending.click();
     await page.getByRole('button', { name: 'Reject' }).click();
 
     const reason = page.getByLabel('Reason for rejection');
@@ -291,6 +339,6 @@ test.describe('GTIDS Agreement Portal', () => {
     await expect(page.locator('.notice-error')).toContainText('at least 10 characters');
 
     // And the agreement was not rejected.
-    await expect(page.getByText('Awaiting employee approval')).toBeVisible();
+    await expect(page.getByText('Awaiting MD signature')).toBeVisible();
   });
 });

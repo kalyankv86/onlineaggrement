@@ -8,7 +8,9 @@ import {
   waitFor,
   SeededFixtures,
   SAMPLE_STAMP_SCAN_BASE64,
+  buildSampleAgreements,
 } from '../helpers/test-app';
+import * as fixturesModule from '../helpers/test-app';
 import { MockEsignProvider } from '../../src/esign/providers/mock.provider';
 import { StorageDriver } from '../../src/documents/storage/storage.driver';
 import { DocumentsService } from '../../src/documents/documents.service';
@@ -23,7 +25,7 @@ jest.setTimeout(120_000);
  * document pipeline. Only the ESP is a double, and it is a faithful one: hash-based
  * signing, HMAC-signed callbacks, real PKCS#7.
  */
-describe('Agent → Employee → MD end to end', () => {
+describe('Agent → MD end to end (DEC-024)', () => {
   let app: INestApplication;
   let knex: Knex;
   let close: () => Promise<void>;
@@ -34,6 +36,7 @@ describe('Agent → Employee → MD end to end', () => {
   const auth = (who: string) => ({ Authorization: `Bearer ${tokens[who]}` });
 
   beforeAll(async () => {
+    await buildSampleAgreements();
     ({ app, knex, close } = await createTestApp());
     http = request(app.getHttpServer());
   });
@@ -111,7 +114,6 @@ describe('Agent → Employee → MD end to end', () => {
         data: { agentName: 'Ramesh Kumar', consideration: 'Rs. 50,000' },
         parties: [
           { partyType: 'AGENT', userId: fixtures.users.agent.id, name: 'Ramesh Kumar', email: fixtures.users.agent.email },
-          { partyType: 'EMPLOYEE', userId: fixtures.users.employee.id, name: 'Sunita Patnaik', email: fixtures.users.employee.email },
           { partyType: 'MD', userId: fixtures.users.md.id, name: 'Dr. A. K. Mohanty', email: fixtures.users.md.email },
         ],
       })
@@ -119,9 +121,26 @@ describe('Agent → Employee → MD end to end', () => {
 
     const id = agreement.body.id;
     await http.post(`/api/v1/agreements/${id}/stamp`).set(auth('agent')).send({ stampId: stamp.body.id }).expect(201);
-    const generated = await http.post(`/api/v1/agreements/${id}/generate`).set(auth('agent')).send().expect(201);
 
-    return { id, stampId: stamp.body.id, documentHash: generated.body.documentHash, number: agreement.body.agreement_number };
+    // DEC-025 — GTIDS supplies the agreement; the portal composes it with the
+    // stamp scan rather than generating it from a template.
+    const uploaded = await http
+      .post(`/api/v1/agreements/${id}/document`)
+      .set(auth('agent'))
+      .send({
+        filename: 'service-agreement.pdf',
+        contentType: 'application/pdf',
+        fileBase64: fixturesModule.SAMPLE_AGREEMENT_BASE64,
+      })
+      .expect(201);
+
+    return {
+      id,
+      stampId: stamp.body.id,
+      documentHash: uploaded.body.documentHash,
+      pageCount: uploaded.body.pageCount,
+      number: agreement.body.agreement_number,
+    };
   }
 
   describe('AC-01 — creation and generation', () => {
@@ -148,54 +167,56 @@ describe('Agent → Employee → MD end to end', () => {
           data: { agentName: 'X', consideration: 'Y' },
           parties: [
             { partyType: 'AGENT', name: 'Agent Name', email: fixtures.users.agent.email },
-            { partyType: 'EMPLOYEE', name: 'Employee Name', email: fixtures.users.employee.email },
             { partyType: 'MD', name: 'MD Name', email: fixtures.users.md.email },
           ],
         })
         .expect(201);
 
       const res = await http
-        .post(`/api/v1/agreements/${agreement.body.id}/generate`)
+        .post(`/api/v1/agreements/${agreement.body.id}/document`)
         .set(auth('agent'))
-        .send()
+        .send({
+          filename: 'a.pdf',
+          contentType: 'application/pdf',
+          fileBase64: fixturesModule.SAMPLE_AGREEMENT_BASE64,
+        })
         .expect(422);
-      expect(res.body.error.message).toMatch(/requires a stamp paper/);
+      expect(res.body.error.message).toMatch(/Allocate the stamp paper first/);
     });
 
-    it('refuses creation when a required template variable is missing', async () => {
+    it('refuses a party set without both signers (DEC-024)', async () => {
       const res = await http
         .post('/api/v1/agreements')
         .set(auth('agent'))
         .send({
           agreementTypeId: fixtures.agreementTypeId,
-          templateVersionId: fixtures.templateVersionId,
-          data: { agentName: 'only one' },
-          parties: [
-            { partyType: 'AGENT', name: 'Agent Name', email: fixtures.users.agent.email },
-            { partyType: 'EMPLOYEE', name: 'Employee Name', email: fixtures.users.employee.email },
-            { partyType: 'MD', name: 'MD Name', email: fixtures.users.md.email },
-          ],
+          data: {},
+          parties: [{ partyType: 'AGENT', name: 'Agent Name', email: fixtures.users.agent.email }],
         })
         .expect(422);
-      expect(res.body.error.details.missing).toEqual(['consideration']);
+      expect(res.body.error.message).toMatch(/requires a MD party/);
+    });
+
+    it('attaches Accounts automatically as a non-signing recipient (DEC-028)', async () => {
+      const { id } = await setUpToGenerated();
+      const agreement = await http.get(`/api/v1/agreements/${id}`).set(auth('agent')).expect(200);
+
+      const accounts = agreement.body.parties.find(
+        (p: { party_type: string }) => p.party_type === 'ACCOUNTS',
+      );
+      expect(accounts.email).toBe('accounts@test.gtids');
+
+      // It signs nothing: no widget, no signature record, no eSign transaction.
+      const report = await http
+        .get(`/api/v1/agreements/${id}/verify-signatures`)
+        .set(auth('agent'))
+        .expect(200);
+      expect(report.body.count).toBe(0);
     });
   });
 
-  describe('AC-02 / AC-03 — the sequence is mandatory', () => {
-    it('employee cannot approve before the agent has signed (BR-002)', async () => {
-      const { id, documentHash } = await setUpToGenerated();
-      const res = await http
-        .post(`/api/v1/agreements/${id}/employee-approve`)
-        .set(auth('employee'))
-        .send({ documentHash })
-        .expect(409);
-      // Two independent guards refuse this: the service checks that the document
-      // is in AGENT_SIGNED state, and the transition table has no edge. Whichever
-      // fires first, the refusal must name BR-002.
-      expect(res.body.error.rule).toBe('BR-002');
-    });
-
-    it('MD cannot sign before the employee has approved (BR-003)', async () => {
+  describe('AC-03 — the sequence is mandatory (DEC-024)', () => {
+    it('MD cannot sign before the agent has signed (BR-003)', async () => {
       const { id, documentHash } = await setUpToGenerated();
       const res = await http
         .post(`/api/v1/agreements/${id}/sign/md`)
@@ -207,7 +228,7 @@ describe('Agent → Employee → MD end to end', () => {
   });
 
   describe('the complete happy path', () => {
-    it('runs Agent → Employee → MD and ends COMPLETED with every guarantee intact', async () => {
+    it('runs Agent → MD and ends COMPLETED with every guarantee intact', async () => {
       const { id, number } = await setUpToGenerated();
 
       // ── Agent signs (FR-011) ────────────────────────────────────────────────
@@ -222,7 +243,7 @@ describe('Agent → Employee → MD end to end', () => {
       await completeCeremony(initiate.body.transactionId);
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_EMPLOYEE_APPROVAL',
+          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
         { label: 'agent signature to land' },
       );
 
@@ -230,21 +251,9 @@ describe('Agent → Employee → MD end to end', () => {
       expect(afterAgent.body.count).toBe(1);
       expect(afterAgent.body.allValid).toBe(true);
 
-      // ── Employee approves (FR-012, consumes no eSign transaction) ───────────
-      const hashSeenByEmployee = await currentHash(id);
-      await http
-        .post(`/api/v1/agreements/${id}/employee-approve`)
-        .set(auth('employee'))
-        .send({ documentHash: hashSeenByEmployee })
-        .expect(201);
-
-      expect((await knex('agreements').where('id', id).first()).status).toBe('PENDING_MD_SIGNATURE');
-      const esignCount = await knex('esign_transactions').where('agreement_id', id).count<{ count: string }[]>('* as count');
-      expect(Number(esignCount[0].count)).toBe(1); // agent only — DEC-004
-
-      const afterEmployee = await http.get(`/api/v1/agreements/${id}/verify-signatures`).set(auth('employee')).expect(200);
-      expect(afterEmployee.body.count).toBe(1);
-      expect(afterEmployee.body.allValid).toBe(true); // agent signature survived
+      // No eSign transaction is consumed by anyone but the two signers.
+      const midCount = await knex('esign_transactions').where('agreement_id', id).count<{ count: string }[]>('* as count');
+      expect(Number(midCount[0].count)).toBe(1);
 
       // ── MD signs (FR-013) ───────────────────────────────────────────────────
       const mdInitiate = await http
@@ -283,7 +292,11 @@ describe('Agent → Employee → MD end to end', () => {
         .join('notifications', 'notifications.id', 'notification_recipients.notification_id')
         .where({ 'notifications.agreement_id': id, 'notifications.event_type': 'COMPLETED' })
         .select('notification_recipients.email', 'notification_recipients.status');
+      // DEC-028 — the executing party, the MD, and Accounts.
       expect(recipients).toHaveLength(3);
+      expect(recipients.map((r) => r.email).sort()).toEqual(
+        ['accounts@test.gtids', fixtures.users.agent.email, fixtures.users.md.email].sort(),
+      );
       expect(recipients.every((r) => r.status === 'QUEUED')).toBe(true); // dispatch is post-commit
 
       const { sent } = await app.get(NotificationsService).dispatchPending();
@@ -306,7 +319,7 @@ describe('Agent → Employee → MD end to end', () => {
       const events = auditRes.body.entries.map((e: { event_type: string }) => e.event_type);
       for (const required of [
         'AGREEMENT_CREATED', 'STAMP_ALLOCATED', 'AGREEMENT_GENERATED',
-        'AGENT_SIGN_INITIATED', 'AGENT_SIGNED', 'EMPLOYEE_APPROVED',
+        'AGENT_SIGN_INITIATED', 'AGENT_SIGNED',
         'MD_SIGN_INITIATED', 'MD_SIGNED', 'AGREEMENT_COMPLETED',
         'FINAL_DOCUMENT_GENERATED',
       ]) {
@@ -337,7 +350,7 @@ describe('Agent → Employee → MD end to end', () => {
   });
 
   describe('AC-18 / FR-027 — stale-view protection', () => {
-    it('refuses an approval carrying a hash the actor no longer sees', async () => {
+    it('refuses a signature carrying a hash the actor no longer sees', async () => {
       const { id, documentHash: hashAtGeneration } = await setUpToGenerated();
 
       const initiate = await http
@@ -348,14 +361,15 @@ describe('Agent → Employee → MD end to end', () => {
       await completeCeremony(initiate.body.transactionId);
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_EMPLOYEE_APPROVAL',
+          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
         { label: 'agent signature' },
       );
 
-      // The document has changed since generation — it now carries a signature.
+      // The document has changed since it was composed — it now carries the
+      // agent's signature, so the MD must act on the new bytes.
       const res = await http
-        .post(`/api/v1/agreements/${id}/employee-approve`)
-        .set(auth('employee'))
+        .post(`/api/v1/agreements/${id}/sign/md`)
+        .set(auth('md'))
         .send({ documentHash: hashAtGeneration })
         .expect(409);
 
@@ -379,7 +393,7 @@ describe('Agent → Employee → MD end to end', () => {
 
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_EMPLOYEE_APPROVAL',
+          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
         { label: 'first callback' },
       );
       const transitionsAfterFirst = await knex('workflow_transitions').where('agreement_id', id);
@@ -390,7 +404,7 @@ describe('Agent → Employee → MD end to end', () => {
       const transitionsAfterReplay = await knex('workflow_transitions').where('agreement_id', id);
       expect(transitionsAfterReplay).toHaveLength(transitionsAfterFirst.length);
       expect((await knex('agreements').where('id', id).first()).status).toBe(
-        'PENDING_EMPLOYEE_APPROVAL',
+        'PENDING_MD_SIGNATURE',
       );
     });
 
@@ -433,7 +447,7 @@ describe('Agent → Employee → MD end to end', () => {
       await completeCeremony(initiate.body.transactionId);
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_EMPLOYEE_APPROVAL',
+          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
         { label: 'agent signature' },
       );
 
@@ -442,7 +456,7 @@ describe('Agent → Employee → MD end to end', () => {
 
       await http
         .post(`/api/v1/agreements/${id}/reject`)
-        .set(auth('employee'))
+        .set(auth('md'))
         .send({ reason: 'The consideration clause states the wrong amount' })
         .expect(201);
 
@@ -472,29 +486,31 @@ describe('Agent → Employee → MD end to end', () => {
         .first();
       expect(allocation).toBeTruthy();
 
-      // The point of a correction is to change something. The draft is editable
-      // again now that it is back in DRAFT.
-      await http
-        .patch(`/api/v1/agreements/${id}`)
-        .set(auth('agent'))
-        .send({ data: { consideration: 'Rs. 75,000' } })
-        .expect(200);
-
+      // The point of a correction is to change something. With uploaded
+      // agreements (DEC-025) that means supplying a revised document.
       const regenerated = await http
-        .post(`/api/v1/agreements/${id}/generate`)
+        .post(`/api/v1/agreements/${id}/document`)
         .set(auth('agent'))
-        .send()
+        .send({
+          filename: 'service-agreement-rev2.pdf',
+          contentType: 'application/pdf',
+          fileBase64: fixturesModule.SAMPLE_AGREEMENT_REV2_BASE64,
+        })
         .expect(201);
       expect(regenerated.body.version).toBe(2);
       expect(v1Hashes).not.toContain(regenerated.body.documentHash);
     });
 
-    it('refuses to edit content once the agreement has left DRAFT (BR-005)', async () => {
+    it('refuses to replace the document once the agreement has left DRAFT (BR-005)', async () => {
       const { id } = await setUpToGenerated();
       const res = await http
-        .patch(`/api/v1/agreements/${id}`)
+        .post(`/api/v1/agreements/${id}/document`)
         .set(auth('agent'))
-        .send({ data: { consideration: 'Rs. 999' } })
+        .send({
+          filename: 'substitute.pdf',
+          contentType: 'application/pdf',
+          fileBase64: fixturesModule.SAMPLE_AGREEMENT_REV2_BASE64,
+        })
         .expect(409);
       expect(res.body.error.rule).toBe('BR-005');
     });
@@ -503,7 +519,7 @@ describe('Agent → Employee → MD end to end', () => {
       const { id } = await setUpToGenerated();
       await http
         .post(`/api/v1/agreements/${id}/reject`)
-        .set(auth('employee'))
+        .set(auth('md'))
         .send({ reason: 'no' })
         .expect(400);
     });
@@ -545,7 +561,7 @@ describe('Agent → Employee → MD end to end', () => {
 
       expect(await jobs.reconcileSigningTransactions()).toBe(1);
       expect((await knex('agreements').where('id', id).first()).status).toBe(
-        'PENDING_EMPLOYEE_APPROVAL',
+        'PENDING_MD_SIGNATURE',
       );
     });
   });

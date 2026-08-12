@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentsService } from './documents.service';
 import { PdfRenderer, PdfLibRenderer, PlaywrightRenderer } from './pdf/renderer';
 import { PdfPreparer } from './pdf/preparer';
+import { DocumentComposer } from './pdf/composer';
 import { PdfVerifier } from './pdf/verifier';
 import { StorageDriver, FilesystemStorageDriver } from './storage/storage.driver';
 
@@ -19,6 +20,7 @@ import { StorageDriver, FilesystemStorageDriver } from './storage/storage.driver
   providers: [
     PdfPreparer,
     PdfVerifier,
+    DocumentComposer,
     DocumentsService,
     {
       provide: PdfRenderer,
@@ -30,6 +32,6 @@ import { StorageDriver, FilesystemStorageDriver } from './storage/storage.driver
     },
     { provide: StorageDriver, useClass: FilesystemStorageDriver },
   ],
-  exports: [DocumentsService, PdfVerifier, PdfPreparer, StorageDriver],
+  exports: [DocumentsService, PdfVerifier, PdfPreparer, DocumentComposer, StorageDriver],
 })
 export class DocumentsModule {}

@@ -13,11 +13,12 @@ import { Role, availableActions } from '../workflow/state-machine';
 
 export interface CreateAgreementInput {
   agreementTypeId: string;
-  templateVersionId: string;
+  templateVersionId?: string;
   placeOfExecutionState?: string;
   data: Record<string, unknown>;
   parties: {
-    partyType: 'AGENT' | 'EMPLOYEE' | 'MD';
+    // ACCOUNTS is added by the service, never by the caller — it signs nothing.
+    partyType: 'AGENT' | 'MD' | 'ACCOUNTS';
     userId?: string;
     name: string;
     email: string;
@@ -45,24 +46,36 @@ export class AgreementsService {
     if (!type) throw new NotFoundError('Agreement type', input.agreementTypeId);
     if (!type.is_active) throw new ValidationError(`Agreement type ${type.code} is not active`);
 
-    const templateVersion = await this.knex('agreement_template_versions')
-      .where('id', input.templateVersionId)
-      .first();
-    if (!templateVersion) throw new NotFoundError('Template version', input.templateVersionId);
-    // FR-003: only approved templates may be instantiated. A retired version stays
-    // readable so historical agreements remain reproducible.
-    if (templateVersion.status !== 'APPROVED') {
-      throw new ValidationError(
-        `Template version is ${templateVersion.status}; only APPROVED versions may be used`,
-      );
+    /*
+     * DEC-025 — an UPLOAD type carries no template: GTIDS supplies the agreement
+     * as its own document. TEMPLATE types keep the FR-003 controls, since there
+     * the portal still authors the text being executed.
+     */
+    let templateVersion: { id: string; variables_schema: { required?: string[] } } | null = null;
+    if (type.document_source === 'TEMPLATE') {
+      if (!input.templateVersionId) {
+        throw new ValidationError(`Agreement type ${type.code} requires a template version`);
+      }
+      templateVersion = await this.knex('agreement_template_versions')
+        .where('id', input.templateVersionId)
+        .first();
+      if (!templateVersion) throw new NotFoundError('Template version', input.templateVersionId);
+      const status = (templateVersion as unknown as { status: string }).status;
+      if (status !== 'APPROVED') {
+        throw new ValidationError(
+          `Template version is ${status}; only APPROVED versions may be used`,
+        );
+      }
+      this.assertTemplateVariables(templateVersion.variables_schema, input.data);
     }
 
-    for (const required of ['AGENT', 'EMPLOYEE', 'MD'] as const) {
+    // DEC-024 — two signing parties. Accounts is added automatically below and is
+    // never supplied by the caller, because it signs nothing.
+    for (const required of ['AGENT', 'MD'] as const) {
       if (!input.parties.some((p) => p.partyType === required)) {
         throw new ValidationError(`Agreement requires a ${required} party`);
       }
     }
-    this.assertTemplateVariables(templateVersion.variables_schema, input.data);
 
     return this.knex.transaction(async (trx) => {
       const { rows } = await trx.raw('SELECT next_agreement_number(?, ?) AS number', [
@@ -75,7 +88,7 @@ export class AgreementsService {
         .insert({
           agreement_number: agreementNumber,
           agreement_type_id: type.id,
-          template_version_id: templateVersion.id,
+          template_version_id: templateVersion?.id ?? null,
           status: 'DRAFT',
           current_version: 1,
           stamp_type: type.requires_stamp ? 'PHYSICAL' : 'NONE',
@@ -86,9 +99,24 @@ export class AgreementsService {
         })
         .returning('*');
 
-      const order: Record<string, number> = { AGENT: 1, EMPLOYEE: 2, MD: 3 };
+      const order: Record<string, number> = { AGENT: 1, EMPLOYEE: 2, MD: 3, ACCOUNTS: 9 };
+
+      /*
+       * DEC-028 — Accounts receives the completion copy. Recorded as a party on
+       * the agreement rather than read from configuration at send time, so the
+       * record shows who was notified even if the configured mailbox later changes.
+       */
+      const parties = [...input.parties];
+      if (type.accounts_email && !parties.some((p) => p.partyType === 'ACCOUNTS')) {
+        parties.push({
+          partyType: 'ACCOUNTS',
+          name: 'Accounts',
+          email: type.accounts_email,
+        });
+      }
+
       await trx('agreement_parties').insert(
-        input.parties.map((p) => ({
+        parties.map((p) => ({
           agreement_id: agreement.id,
           party_type: p.partyType,
           user_id: p.userId ?? null,
@@ -105,7 +133,7 @@ export class AgreementsService {
         {
           agreementNumber,
           agreementType: type.code,
-          templateVersionId: templateVersion.id,
+          templateVersionId: templateVersion?.id ?? null,
           parties: input.parties.map((p) => ({ type: p.partyType, email: p.email })),
         },
         { agreementId: agreement.id, agreementVersion: 1, actorId: actor.userId, ...ctx },
@@ -188,6 +216,105 @@ export class AgreementsService {
       );
     }
     return this.stamps.allocate({ stampId, agreementId, actorId: actor.userId });
+  }
+
+  /**
+   * DEC-025 — attach the agreement GTIDS supplies, compose it with the stamp
+   * scan, and move to READY_FOR_AGENT_SIGNATURE.
+   *
+   * This replaces template generation for UPLOAD types. The document and the
+   * state change commit together: an agreement waiting on a signature with no
+   * document would strand the Agent, and a document without the state change
+   * would be re-composed on retry and orphan the first one.
+   */
+  async uploadAgreementDocument(
+    params: {
+      agreementId: string;
+      file: Buffer;
+      filename: string;
+      contentType: string;
+      actor: Principal;
+    },
+    ctx: { ipAddress?: string; userAgent?: string },
+  ) {
+    const agreement = await this.workflow.get(params.agreementId);
+    if (agreement.status !== 'DRAFT') {
+      throw new ConflictError(
+        `The agreement document can only be attached while the agreement is DRAFT (currently ${agreement.status})`,
+        'BR-005',
+      );
+    }
+
+    const type = await this.knex('agreement_types').where('id', agreement.agreement_type_id).first();
+    if (type.requires_stamp) {
+      const allocation = await this.knex('stamp_allocations')
+        .where({ agreement_id: params.agreementId })
+        .whereNull('released_at')
+        .first();
+      if (!allocation) {
+        throw new ValidationError(
+          'Allocate the stamp paper first — it becomes page 1 of the executed document',
+        );
+      }
+    }
+
+    const stampScan = await this.loadStampScan(params.agreementId);
+
+    return this.knex.transaction(async (trx) => {
+      const composed = await this.documents.composeFromUpload(
+        {
+          agreementId: agreement.id,
+          agreementNumber: agreement.agreement_number,
+          version: agreement.current_version,
+          uploaded: params.file,
+          filename: params.filename,
+          contentType: params.contentType,
+          stampScan,
+        },
+        trx,
+      );
+
+      await trx('agreement_source_documents')
+        .insert({
+          agreement_id: agreement.id,
+          agreement_version: agreement.current_version,
+          original_filename: params.filename,
+          original_content_type: params.contentType,
+          original_file_key: composed.fileKey,
+          original_hash: composed.documentHash,
+          page_count: composed.pageCount,
+          uploaded_by: params.actor.userId,
+        })
+        .onConflict(['agreement_id', 'agreement_version'])
+        .merge();
+
+      await this.workflow.transition(
+        {
+          agreementId: agreement.id,
+          action: 'GENERATE',
+          actorId: params.actor.userId,
+          actorRoles: params.actor.roles,
+          trigger: 'USER',
+          auditEvent: AuditEvent.AGREEMENT_GENERATED,
+          auditData: {
+            source: 'UPLOAD',
+            originalFilename: params.filename,
+            convertedFromWord: composed.convertedFromWord,
+            pageCount: composed.pageCount,
+            documentHash: composed.documentHash,
+          },
+          auditContext: ctx,
+        },
+        trx,
+      );
+
+      return {
+        documentHash: composed.documentHash,
+        pageCount: composed.pageCount,
+        convertedFromWord: composed.convertedFromWord,
+        version: agreement.current_version,
+      };
+    });
   }
 
   /**

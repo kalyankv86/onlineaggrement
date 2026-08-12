@@ -6,7 +6,6 @@ import {
   embedSignature,
   reopenSignatureSlot,
   appendSignature,
-  appendAttestation,
 } from '../../src/documents/pdf/incremental-signer';
 import { parseDocument, findSignatures } from '../../src/documents/pdf/pdf-objects';
 import { signingIdentityFor, signDetached } from '../../src/esign/providers/pkcs7';
@@ -27,7 +26,6 @@ describe('document pipeline', () => {
 
   let flat: Buffer;
   let prepared: Buffer;
-  let fontObjectNumber: number;
 
   beforeAll(async () => {
     flat = await renderer.render({
@@ -35,9 +33,7 @@ describe('document pipeline', () => {
       templateHtml: TEMPLATE,
       variables: { agentName: 'Ramesh Kumar', executionDate: '2026-08-09', consideration: 'Rs. 50,000' },
     });
-    const result = await preparer.prepare(flat);
-    prepared = result.buffer;
-    fontObjectNumber = result.fontObjectNumber;
+    prepared = (await preparer.prepare(flat)).buffer;
   });
 
   describe('template merge', () => {
@@ -61,11 +57,14 @@ describe('document pipeline', () => {
       expect(() => parseDocument(prepared)).not.toThrow();
     });
 
-    it('reserves all three signature widgets before any signature exists', () => {
+    it('reserves both signature widgets before any signature exists', () => {
       const text = prepared.toString('latin1');
       for (const field of Object.values(SIGNATURE_FIELDS)) {
         expect(text).toContain(`/T (${field})`);
       }
+      // DEC-024 removed the employee approval step, so no widget is reserved for it.
+      expect(Object.keys(SIGNATURE_FIELDS)).toEqual(['AGENT', 'MD']);
+      expect(text).not.toContain('GTIDS_Employee');
       expect(findSignatures(prepared)).toHaveLength(0);
     });
 
@@ -74,9 +73,8 @@ describe('document pipeline', () => {
     });
   });
 
-  describe('AC-10 — three sequential actions, all signatures remain valid', () => {
+  describe('AC-10 — two sequential signatures, both remain valid', () => {
     let agentSigned: Buffer;
-    let attested: Buffer;
     let final: Buffer;
 
     it('applies the agent signature as an append-only revision', async () => {
@@ -95,21 +93,8 @@ describe('document pipeline', () => {
       expect(verifier.verify(agentSigned).count).toBe(1);
     });
 
-    it('employee attestation leaves the agent signature valid and consumes no eSign transaction', () => {
-      attested = appendAttestation(agentSigned, {
-        fieldName: SIGNATURE_FIELDS.EMPLOYEE,
-        lines: ['APPROVED', 'Sunita Patnaik (Employee)'],
-        fontObjectNumber,
-      }).buffer;
-
-      expect(attested.subarray(0, agentSigned.length).equals(agentSigned)).toBe(true);
-      const report = verifier.verify(attested);
-      expect(report.count).toBe(1); // no new cryptographic signature
-      expect(report.allValid).toBe(true);
-    });
-
     it('applies the MD signature with both signatures valid afterwards', async () => {
-      const result = await appendSignature(attested, {
+      const result = await appendSignature(agentSigned, {
         fieldName: SIGNATURE_FIELDS.MD,
         name: 'Dr. A. K. Mohanty',
         reason: 'Final execution',
@@ -118,7 +103,7 @@ describe('document pipeline', () => {
       });
       final = result.buffer;
 
-      expect(final.subarray(0, attested.length).equals(attested)).toBe(true);
+      expect(final.subarray(0, agentSigned.length).equals(agentSigned)).toBe(true);
       const report = verifier.verify(final);
       expect(report.count).toBe(2);
       expect(report.allValid).toBe(true);

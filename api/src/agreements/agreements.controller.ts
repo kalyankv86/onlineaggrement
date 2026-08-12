@@ -31,9 +31,15 @@ import { DocumentsService } from '../documents/documents.service';
 import { VerificationService } from '../verification/verification.service';
 import { CurrentUser, Roles, clientContext } from '../auth/auth.guard';
 import { Principal } from '../auth/auth.service';
+import { ValidationError } from '../common/errors/domain.errors';
+
+/** Matches the API body limit; a scanned agreement can legitimately be large. */
+const MAX_AGREEMENT_BYTES = 12 * 1024 * 1024;
 
 class PartyDto {
-  @IsIn(['AGENT', 'EMPLOYEE', 'MD']) partyType!: 'AGENT' | 'EMPLOYEE' | 'MD';
+  // DEC-024 — two signing parties. ACCOUNTS is attached by the service from the
+  // agreement type and is deliberately not accepted from the client.
+  @IsIn(['AGENT', 'MD']) partyType!: 'AGENT' | 'MD';
   @IsOptional() @IsUUID() userId?: string;
   @IsString() @Length(2, 200) name!: string;
   @IsEmail() email!: string;
@@ -43,7 +49,8 @@ class PartyDto {
 
 class CreateAgreementDto {
   @IsUUID() agreementTypeId!: string;
-  @IsUUID() templateVersionId!: string;
+  // Optional: UPLOAD agreement types carry no template (DEC-025).
+  @IsOptional() @IsUUID() templateVersionId?: string;
   @IsOptional() @IsString() placeOfExecutionState?: string;
   /**
    * Template variable values. Shape is not fixed here — it is validated against
@@ -57,6 +64,13 @@ class CreateAgreementDto {
 class UpdateAgreementDto {
   @IsOptional() @IsObject() data?: Record<string, unknown>;
   @IsOptional() @IsString() placeOfExecutionState?: string;
+}
+
+class UploadAgreementDto {
+  @IsString() @Length(1, 300) filename!: string;
+  @IsOptional() @IsString() contentType?: string;
+  /** The agreement as PDF or Word, base64 encoded. */
+  @IsString() fileBase64!: string;
 }
 
 class AllocateStampDto {
@@ -131,6 +145,32 @@ export class AgreementsController {
     @CurrentUser() actor: Principal,
   ) {
     return this.agreements.allocateStamp(id, dto.stampId, actor);
+  }
+
+  /**
+   * DEC-025 — attach the agreement document GTIDS supplies.
+   *
+   * Base64 rather than multipart to match the stamp upload, and because the raw
+   * body is already retained for the eSign callback signature; mixing in a
+   * multipart parser for two endpoints would complicate that.
+   */
+  @Post(':id/document')
+  @Roles('AGENT', 'AGREEMENT_ADMIN', 'SUPER_ADMIN')
+  async uploadDocument(
+    @Param('id') id: string,
+    @Body() dto: UploadAgreementDto,
+    @CurrentUser() actor: Principal,
+    @Req() req: Request,
+  ) {
+    const file = Buffer.from(dto.fileBase64, 'base64');
+    if (file.length === 0) throw new ValidationError('The uploaded file is empty or not valid base64');
+    if (file.length > MAX_AGREEMENT_BYTES) {
+      throw new ValidationError(`The agreement exceeds the ${MAX_AGREEMENT_BYTES / 1024 / 1024} MB limit`);
+    }
+    return this.agreements.uploadAgreementDocument(
+      { agreementId: id, file, filename: dto.filename, contentType: dto.contentType ?? 'application/pdf', actor },
+      clientContext(req),
+    );
   }
 
   @Post(':id/generate')

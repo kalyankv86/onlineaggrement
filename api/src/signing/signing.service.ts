@@ -209,8 +209,8 @@ export class SigningService {
         await trx('agreement_parties').where('id', party.id).update({ status: 'ACTED' });
 
         if (field === 'AGENT') {
-          // Success and the advance to employee approval are one consequence, not
-          // two decisions — they commit together (BR-002).
+          // The signature succeeding and the agreement moving to the MD are one
+          // consequence, not two decisions — they commit together (DEC-024).
           await this.workflow.transitionChain(
             [
               {
@@ -224,12 +224,16 @@ export class SigningService {
               },
               {
                 agreementId: agreement.id,
-                action: 'ADVANCE_TO_EMPLOYEE',
+                action: 'ADVANCE_TO_MD',
                 actorId: null,
                 actorRoles: ['SYSTEM'],
                 trigger: 'SYSTEM',
               },
             ],
+            trx,
+          );
+          await this.notifications.enqueue(
+            { agreementId: agreement.id, eventType: 'AGENT_SIGNED', recipients: ['MD'] },
             trx,
           );
         } else {
@@ -312,102 +316,6 @@ export class SigningService {
     });
   }
 
-  // ── Employee approval (FR-012 / DEC-004) ────────────────────────────────────
-
-  /**
-   * An authenticated attested action, not an eSign signature. Consumes no ESP
-   * transaction; renders an attestation into the reserved widget by incremental
-   * update, leaving the Agent signature valid.
-   */
-  async employeeApprove(
-    params: { agreementId: string; presentedDocumentHash: string; actor: Principal },
-    ctx: ActionContext = {},
-  ): Promise<{ documentHash: string }> {
-    const agreement = await this.workflow.get(params.agreementId);
-    const version = await this.documents.currentVersion(agreement.id, agreement.current_version);
-
-    if (version.document_hash !== params.presentedDocumentHash) {
-      throw new StaleDocumentError(params.presentedDocumentHash, version.document_hash);
-    }
-    if (version.signature_state !== 'AGENT_SIGNED') {
-      // Belt and braces alongside the transition table: approval must act on the
-      // Agent-signed bytes, not on some other version (BR-002).
-      throw new ConflictError(
-        `Employee approval requires the agent-signed document (current state ${version.signature_state})`,
-        'BR-002',
-      );
-    }
-
-    const party = await this.agreements.party(agreement.id, 'EMPLOYEE');
-    this.assertActorIsParty(params.actor, party);
-
-    return this.knex.transaction(async (trx) => {
-      const stored = await this.documents.applyAttestation(
-        {
-          agreementId: agreement.id,
-          agreementNumber: agreement.agreement_number,
-          version: agreement.current_version,
-          sourceFileKey: version.file_key,
-          lines: [
-            'APPROVED',
-            `${party.name} (Employee)`,
-            new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
-            `Hash ${version.document_hash.slice(0, 16)}...`,
-          ],
-        },
-        trx,
-      );
-
-      await trx('signature_events').insert({
-        agreement_id: agreement.id,
-        party_id: party.id,
-        agreement_version: agreement.current_version,
-        event_type: 'ATTESTED',
-        document_hash: version.document_hash, // the hash the Employee actually saw
-        ip_address: ctx.ipAddress ?? null,
-        user_agent: ctx.userAgent ?? null,
-      });
-      await trx('agreement_parties').where('id', party.id).update({ status: 'ACTED' });
-
-      await this.workflow.transitionChain(
-        [
-          {
-            agreementId: agreement.id,
-            action: 'EMPLOYEE_APPROVE',
-            actorId: params.actor.userId,
-            actorRoles: params.actor.roles,
-            trigger: 'USER',
-            auditEvent: AuditEvent.EMPLOYEE_APPROVED,
-            auditData: {
-              approvedDocumentHash: version.document_hash,
-              attestedDocumentHash: stored.documentHash,
-            },
-            auditContext: ctx,
-          },
-          {
-            agreementId: agreement.id,
-            action: 'ADVANCE_TO_MD',
-            actorId: null,
-            actorRoles: ['SYSTEM'],
-            trigger: 'SYSTEM',
-          },
-        ],
-        trx,
-      );
-
-      await this.notifications.enqueue(
-        {
-          agreementId: agreement.id,
-          eventType: 'EMPLOYEE_APPROVED',
-          recipients: ['MD'],
-        },
-        trx,
-      );
-
-      return { documentHash: stored.documentHash };
-    });
-  }
-
   // ── Rejection (FR-015) ──────────────────────────────────────────────────────
 
   async reject(
@@ -415,8 +323,9 @@ export class SigningService {
     ctx: ActionContext = {},
   ): Promise<void> {
     const agreement = await this.workflow.get(params.agreementId);
-    const isMd = agreement.status === 'PENDING_MD_SIGNATURE' || agreement.status === 'MD_SIGNING';
-    const party = await this.agreements.party(agreement.id, isMd ? 'MD' : 'EMPLOYEE');
+    // Only the MD can reject now: the transition table offers REJECT from the MD
+    // states alone (DEC-024).
+    const party = await this.agreements.party(agreement.id, 'MD');
 
     await this.knex.transaction(async (trx) => {
       await trx('signature_events').insert({
@@ -438,7 +347,7 @@ export class SigningService {
           actorRoles: params.actor.roles,
           trigger: 'USER',
           reason: params.reason,
-          auditEvent: isMd ? AuditEvent.MD_REJECTED : AuditEvent.EMPLOYEE_REJECTED,
+          auditEvent: AuditEvent.MD_REJECTED,
           auditContext: ctx,
           patch: {
             rejected_reason: params.reason,
@@ -455,8 +364,8 @@ export class SigningService {
         {
           agreementId: agreement.id,
           eventType: 'REJECTED',
-          recipients: isMd ? ['AGENT', 'EMPLOYEE'] : ['AGENT'],
-          payload: { reason: params.reason, rejectedBy: party.party_type },
+          recipients: ['AGENT'],
+          payload: { reason: params.reason, rejectedBy: 'MD' },
         },
         trx,
       );
@@ -487,11 +396,12 @@ export class SigningService {
       trx,
     );
 
+    // DEC-028 — the executing party, the MD who signed it, and Accounts.
     await this.notifications.enqueue(
       {
         agreementId,
         eventType: 'COMPLETED',
-        recipients: ['AGENT', 'EMPLOYEE', 'MD'],
+        recipients: ['AGENT', 'MD', 'ACCOUNTS'],
         payload: { documentHash: finalHash },
       },
       trx,

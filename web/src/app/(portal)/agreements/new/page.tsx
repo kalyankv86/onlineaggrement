@@ -9,6 +9,8 @@ interface AgreementType {
   name: string;
   requires_stamp: boolean;
   stamp_denomination: string;
+  /** UPLOAD types carry no template — GTIDS supplies the document (DEC-025). */
+  document_source: 'UPLOAD' | 'TEMPLATE';
 }
 interface Template {
   id: string;
@@ -49,14 +51,18 @@ export default async function NewAgreementPage() {
     }),
   );
 
-  const usable = options.filter((o) => o.templates.length > 0);
+  // A TEMPLATE type is unusable without an approved template version. An UPLOAD
+  // type needs none, so filtering on templates would hide it entirely.
+  const usable = options.filter(
+    (o) => o.type.document_source === 'UPLOAD' || o.templates.length > 0,
+  );
 
   return (
     <>
       <h1>New agreement</h1>
       <p className="page-sub">
-        The agreement is created as a draft. Nothing is generated or signed until a stamp paper is
-        attached and you generate the document.
+        The agreement is created as a draft. Nothing is composed or signed until you attach the
+        stamp paper scan and the agreement document.
       </p>
       <NewAgreementForm options={usable} />
     </>

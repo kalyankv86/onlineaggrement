@@ -1,5 +1,5 @@
 import { get, type StampPaper } from '@/lib/api';
-import { StampForm } from '@/components/StampForm';
+import { StampScanForm } from '@/components/StampScanForm';
 import { Empty } from '@/components/ui';
 import { formatDateOnly } from '@/lib/workflow';
 
@@ -41,7 +41,7 @@ export default async function StampsPage() {
       </div>
 
       <div className="grid grid-2">
-        <StampForm />
+        <StampScanForm />
 
         <div className="card">
           <h2>Available now</h2>

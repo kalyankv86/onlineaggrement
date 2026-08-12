@@ -7,7 +7,7 @@ import * as path from 'path';
 import { PlaywrightRenderer } from '../../src/documents/pdf/renderer';
 import { PdfPreparer, SIGNATURE_FIELDS } from '../../src/documents/pdf/preparer';
 import { PdfVerifier } from '../../src/documents/pdf/verifier';
-import { appendSignature, appendAttestation } from '../../src/documents/pdf/incremental-signer';
+import { appendSignature } from '../../src/documents/pdf/incremental-signer';
 import { parseDocument, findSignatures } from '../../src/documents/pdf/pdf-objects';
 import { signingIdentityFor, signDetached } from '../../src/esign/providers/pkcs7';
 
@@ -58,7 +58,6 @@ describe('PlaywrightRenderer in the signing pipeline', () => {
 
   let rendered: Buffer;
   let prepared: Buffer;
-  let fontObjectNumber: number;
 
   beforeAll(async () => {
     rendered = await renderer.render({
@@ -72,9 +71,7 @@ describe('PlaywrightRenderer in the signing pipeline', () => {
         termMonths: '12',
       },
     });
-    const result = await preparer.prepare(rendered);
-    prepared = result.buffer;
-    fontObjectNumber = result.fontObjectNumber;
+    prepared = (await preparer.prepare(rendered)).buffer;
   });
 
   it('renders real HTML, with CSS applied', () => {
@@ -103,7 +100,7 @@ describe('PlaywrightRenderer in the signing pipeline', () => {
     }
   });
 
-  it('carries all three actions with every signature valid (AC-10 on the production renderer)', async () => {
+  it('carries both signatures, each valid, on the production renderer (AC-10)', async () => {
     const agent = await appendSignature(prepared, {
       fieldName: SIGNATURE_FIELDS.AGENT,
       name: 'Ramesh Kumar',
@@ -114,14 +111,7 @@ describe('PlaywrightRenderer in the signing pipeline', () => {
     expect(agent.buffer.subarray(0, prepared.length).equals(prepared)).toBe(true);
     expect(verifier.verify(agent.buffer).allValid).toBe(true);
 
-    const attested = appendAttestation(agent.buffer, {
-      fieldName: SIGNATURE_FIELDS.EMPLOYEE,
-      lines: ['APPROVED', 'Sunita Patnaik (Employee)'],
-      fontObjectNumber,
-    }).buffer;
-    expect(verifier.verify(attested).allValid).toBe(true);
-
-    const md = await appendSignature(attested, {
+    const md = await appendSignature(agent.buffer, {
       fieldName: SIGNATURE_FIELDS.MD,
       name: 'Dr. A. K. Mohanty',
       reason: 'Final execution',

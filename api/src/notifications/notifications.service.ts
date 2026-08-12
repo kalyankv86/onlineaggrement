@@ -13,7 +13,12 @@ export type NotificationEvent =
   | 'REJECTED'
   | 'REMINDER';
 
-export type PartyType = 'AGENT' | 'EMPLOYEE' | 'MD';
+/**
+ * Recipients of a notification. ACCOUNTS is notification-only (DEC-028): it holds
+ * no signing rights and never appears in a signature record. EMPLOYEE remains for
+ * agreements executed before DEC-024 changed the workflow.
+ */
+export type PartyType = 'AGENT' | 'EMPLOYEE' | 'MD' | 'ACCOUNTS';
 
 export interface EnqueueRequest {
   agreementId: string;

@@ -54,6 +54,11 @@ else
   kv "current" "NOT PRESENT — deploy.sh has never completed a switch"
 fi
 
+sec "Document tooling"
+for t in tesseract pdftoppm soffice; do
+  kv "$t" "$(command -v $t || echo 'NOT INSTALLED')"
+done
+
 sec "Configuration"
 if [[ -f "$ENV_FILE" ]]; then
   for k in NODE_ENV PORT STORAGE_FS_ROOT PDF_RENDERER ESIGN_PROVIDER SMTP_TRANSPORT API_BASE_URL; do

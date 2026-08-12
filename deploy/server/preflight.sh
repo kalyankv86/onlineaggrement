@@ -53,6 +53,13 @@ if command -v node >/dev/null; then
 fi
 command -v pdfsig >/dev/null && ok "pdfsig (poppler) available for signature checks" \
   || hmm "poppler-utils not installed — signature spot-checks unavailable"
+# DEC-026 / DEC-025 — stamp OCR and Word conversion.
+command -v tesseract >/dev/null && ok "tesseract $(tesseract --version 2>&1 | head -1 | awk '{print $2}') (stamp OCR)" \
+  || no "tesseract-ocr is not installed — stamp scans cannot be read (DEC-026)"
+command -v pdftoppm >/dev/null && ok "pdftoppm (renders PDF scans for OCR)" \
+  || no "pdftoppm is missing — PDF stamp scans cannot be OCR'd"
+command -v soffice >/dev/null && ok "libreoffice (Word to PDF conversion)" \
+  || hmm "libreoffice is not installed — only PDF agreements can be uploaded (DEC-025)"
 
 head_ "Services"
 systemctl is-active --quiet postgresql && ok "postgresql running" || no "postgresql is not running"

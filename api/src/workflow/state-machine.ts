@@ -24,9 +24,6 @@ export const WORKFLOW_ACTIONS = [
   'AGENT_SIGN_INITIATE',
   'AGENT_SIGN_SUCCEED',
   'AGENT_SIGN_FAIL',
-  'ADVANCE_TO_EMPLOYEE',
-  'EMPLOYEE_REVIEW_START',
-  'EMPLOYEE_APPROVE',
   'ADVANCE_TO_MD',
   'MD_SIGN_INITIATE',
   'MD_SIGN_SUCCEED',
@@ -65,10 +62,12 @@ interface TransitionRule {
  * to an agreement — no service reads or writes `agreements.status` without going
  * through `assertTransition`.
  *
- * Sequencing (BR-002, BR-003) is expressed structurally rather than by a guard:
- * EMPLOYEE_APPROVE simply has no edge from any state before AGENT_SIGNED, and
- * MD_SIGN_INITIATE has none from any state before EMPLOYEE_APPROVED. There is no
- * ordering check to forget, and no flag that can be set out of order.
+ * Sequencing (BR-003 as amended by DEC-024) is expressed structurally rather than
+ * by a guard: MD_SIGN_INITIATE has no edge from any state before AGENT_SIGNED, so
+ * the MD cannot sign an agreement the Agent has not executed. There is no ordering
+ * check to forget, and no flag that can be set out of order.
+ *
+ * The EMPLOYEE_* states are retained but unreachable — see ADVANCE_TO_MD below.
  */
 export const TRANSITIONS: Record<WorkflowAction, TransitionRule> = {
   GENERATE: {
@@ -97,32 +96,19 @@ export const TRANSITIONS: Record<WorkflowAction, TransitionRule> = {
     roles: ['SYSTEM'],
     rule: 'FR-011',
   },
-  ADVANCE_TO_EMPLOYEE: {
-    from: ['AGENT_SIGNED'],
-    to: 'PENDING_EMPLOYEE_APPROVAL',
-    roles: ['SYSTEM'],
-    rule: 'FR-012',
-  },
-
-  // ── Employee approval (FR-012, BR-002) ──────────────────────────────────────
-  // No edge exists from any pre-AGENT_SIGNED state: BR-002 is unreachable-by-design.
-  EMPLOYEE_REVIEW_START: {
-    from: ['PENDING_EMPLOYEE_APPROVAL'],
-    to: 'EMPLOYEE_APPROVING',
-    roles: ['EMPLOYEE'],
-    rule: 'FR-012 / BR-002',
-  },
-  EMPLOYEE_APPROVE: {
-    from: ['PENDING_EMPLOYEE_APPROVAL', 'EMPLOYEE_APPROVING'],
-    to: 'EMPLOYEE_APPROVED',
-    roles: ['EMPLOYEE'],
-    rule: 'FR-012 / BR-002',
-  },
+  /*
+   * DEC-024 — the Agent signature advances straight to the MD.
+   *
+   * The Employee states remain in the enum and in historical rows, because an
+   * agreement executed under the previous three-party rules is still a valid
+   * record and its trail must stay readable. They are simply no longer reachable:
+   * there is no edge into PENDING_EMPLOYEE_APPROVAL.
+   */
   ADVANCE_TO_MD: {
-    from: ['EMPLOYEE_APPROVED'],
+    from: ['AGENT_SIGNED'],
     to: 'PENDING_MD_SIGNATURE',
     roles: ['SYSTEM'],
-    rule: 'FR-013',
+    rule: 'FR-013 / DEC-024',
   },
 
   // ── MD signature (FR-013, BR-003, BR-007) ───────────────────────────────────
@@ -130,6 +116,8 @@ export const TRANSITIONS: Record<WorkflowAction, TransitionRule> = {
     from: ['PENDING_MD_SIGNATURE'],
     to: 'MD_SIGNING',
     roles: ['MD', 'MD_DELEGATE'],
+    // BR-003 as amended: MD signing is unreachable until the Agent has signed,
+    // because PENDING_MD_SIGNATURE has exactly one inbound edge, from AGENT_SIGNED.
     rule: 'FR-013 / BR-003',
   },
   MD_SIGN_SUCCEED: {
@@ -161,9 +149,9 @@ export const TRANSITIONS: Record<WorkflowAction, TransitionRule> = {
 
   // ── Exceptions ──────────────────────────────────────────────────────────────
   REJECT: {
-    from: ['PENDING_EMPLOYEE_APPROVAL', 'EMPLOYEE_APPROVING', 'PENDING_MD_SIGNATURE', 'MD_SIGNING'],
+    from: ['PENDING_MD_SIGNATURE', 'MD_SIGNING'],
     to: 'REJECTED',
-    roles: ['EMPLOYEE', 'MD', 'MD_DELEGATE'],
+    roles: ['MD', 'MD_DELEGATE'],
     rule: 'FR-015',
     requiresReason: true,
   },
@@ -189,8 +177,6 @@ export const TRANSITIONS: Record<WorkflowAction, TransitionRule> = {
     from: [
       'READY_FOR_AGENT_SIGNATURE',
       'AGENT_SIGNING',
-      'PENDING_EMPLOYEE_APPROVAL',
-      'EMPLOYEE_APPROVING',
       'PENDING_MD_SIGNATURE',
       'MD_SIGNING',
       'SIGNATURE_FAILED',
@@ -219,8 +205,6 @@ export const isTerminal = (s: AgreementState): boolean =>
 /** States where the workflow is waiting on a human, so the SLA clock runs (FR-021). */
 export const PENDING_ACTION_STATES: AgreementState[] = [
   'READY_FOR_AGENT_SIGNATURE',
-  'PENDING_EMPLOYEE_APPROVAL',
-  'EMPLOYEE_APPROVING',
   'PENDING_MD_SIGNATURE',
 ];
 
@@ -275,9 +259,8 @@ export function availableActions(from: AgreementState, actorRoles: Role[]): Work
 }
 
 /** Which signature widget, if any, a state is waiting on. */
-export function pendingSigner(state: AgreementState): 'AGENT' | 'EMPLOYEE' | 'MD' | null {
+export function pendingSigner(state: AgreementState): 'AGENT' | 'MD' | null {
   if (state === 'READY_FOR_AGENT_SIGNATURE' || state === 'AGENT_SIGNING') return 'AGENT';
-  if (state === 'PENDING_EMPLOYEE_APPROVAL' || state === 'EMPLOYEE_APPROVING') return 'EMPLOYEE';
   if (state === 'PENDING_MD_SIGNATURE' || state === 'MD_SIGNING') return 'MD';
   return null;
 }

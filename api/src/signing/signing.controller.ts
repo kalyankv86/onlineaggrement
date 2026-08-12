@@ -11,10 +11,6 @@ class SignInitiateDto {
   @IsString() @Length(64, 64) documentHash!: string;
 }
 
-class ApproveDto {
-  @IsString() @Length(64, 64) documentHash!: string;
-}
-
 class RejectDto {
   @IsString() @MinLength(10, { message: 'reason must be at least 10 characters' })
   reason!: string;
@@ -51,19 +47,6 @@ export class SigningController {
   ) {
     return this.signing.initiateSignature(
       { agreementId: id, party: 'MD', presentedDocumentHash: dto.documentHash, actor },
-      clientContext(req),
-    );
-  }
-
-  @Post('agreements/:id/employee-approve')
-  async employeeApprove(
-    @Param('id') id: string,
-    @Body() dto: ApproveDto,
-    @CurrentUser() actor: Principal,
-    @Req() req: Request,
-  ) {
-    return this.signing.employeeApprove(
-      { agreementId: id, presentedDocumentHash: dto.documentHash, actor },
       clientContext(req),
     );
   }

@@ -9,6 +9,7 @@
 #
 #   ./deploy/local/start.sh            # build, migrate, seed, start
 #   ./deploy/local/start.sh --no-seed  # keep existing data
+#   ./deploy/local/start.sh --reset    # drop databases AND local documents, then seed
 #
 set -euo pipefail
 
@@ -19,7 +20,11 @@ RUN="$ROOT/.run"
 PORT="${PORT:-3100}"
 WEB_PORT="${WEB_PORT:-3101}"
 SEED=1
-[[ "${1:-}" == "--no-seed" ]] && SEED=0
+RESET=0
+case "${1:-}" in
+  --no-seed) SEED=0 ;;
+  --reset)   RESET=1 ;;
+esac
 
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$1"; }
@@ -50,6 +55,20 @@ redis-cli ping >/dev/null 2>&1 || fail "redis did not become ready"
 green "postgresql and redis are up"
 
 # ── Databases ────────────────────────────────────────────────────────────────
+if [[ $RESET -eq 1 ]]; then
+  # Database and document store are reset together, always.
+  #
+  # Agreement numbers restart at 000001 on a fresh database, and object keys are
+  # derived from the number — so dropping one without the other makes the next
+  # composition collide with a file left by the previous run, and the write-once
+  # guard refuses it. Correctly, but confusingly.
+  dim "resetting databases and local document storage…"
+  "$ROOT/deploy/local/stop.sh" --quiet 2>/dev/null || true
+  dropdb --if-exists gtids_agreements
+  dropdb --if-exists gtids_agreements_test
+  rm -rf "$API/storage" "$API/.test-storage"
+fi
+
 createdb gtids_agreements 2>/dev/null && dim "created database gtids_agreements" || true
 createdb gtids_agreements_test 2>/dev/null && dim "created database gtids_agreements_test" || true
 

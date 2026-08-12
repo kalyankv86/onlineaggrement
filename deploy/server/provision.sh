@@ -35,7 +35,14 @@ apt-get install -y -qq \
   postgresql postgresql-contrib redis-server \
   nfs-common cifs-utils \
   poppler-utils \
-  fonts-liberation fonts-dejavu-core
+  fonts-liberation fonts-dejavu-core \
+  tesseract-ocr tesseract-ocr-eng \
+  libreoffice-writer libreoffice-core
+
+# tesseract-ocr reads the stamp paper scans (DEC-026); pdftoppm from
+# poppler-utils rasterises PDF scans for it. libreoffice-writer converts uploaded
+# Word agreements to PDF (DEC-025) — writer alone, not the whole suite, to keep
+# the install small. Both run offline, which suits a server with no egress.
 
 # Chromium's own runtime libraries. Playwright renders the agreement PDFs, and
 # these are what it silently fails without.

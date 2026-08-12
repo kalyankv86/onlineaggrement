@@ -268,3 +268,72 @@ and both documents mark it optional. **Proposed:** explicitly **deferred to v1.1
 - [ ] DEC-012, DEC-013 quantified by GTIDS
 - [ ] SRS v1.1 and SDD v1.1 amendments issued and approved
 - [ ] ERD and OpenAPI spec reviewed against SDD §7–§9
+
+---
+
+## E. Scope change — GTIDS revised workflow (12 Aug 2026)
+
+GTIDS described the workflow they actually want during POC deployment. It differs
+from SRS v1.0 in four material respects. Recorded here because the SRS is an
+approved document and these are departures from it, not clarifications of it.
+
+### DEC-024 — Two-party execution replaces Agent → Employee → MD
+**Severity:** BLOCKER (supersedes SRS §3) · **Status:** DECIDED by GTIDS · **Owner:** GTIDS Management
+
+The mandated sequence becomes **Agent signs → MD signs → COMPLETED**. The Employee
+approval step is removed.
+
+**Consequences.** BR-002 no longer exists. BR-003 becomes "MD signing is disabled
+until the Agent signature is successful". The agreement carries two signature
+widgets rather than three. `EMPLOYEE` ceases to be a required party.
+
+**Raised for GTIDS legal:** the Employee approval was the only point at which
+someone inside GTIDS reviewed an Agent-signed agreement before it reached the MD.
+Removing it means the MD is the first and only internal reviewer. That may be
+correct for the volume involved; it should be a decision rather than a side
+effect.
+
+### DEC-025 — Agreements are uploaded, not generated from templates
+**Severity:** HIGH · **Status:** DECIDED · **Affects:** FR-002, FR-003, FR-009
+
+GTIDS supplies the agreement as its own document (PDF or Word) per agreement,
+rather than the portal generating it from an approved HTML template.
+
+**Consequence.** The FR-003 template-approval controls — versioning, separation of
+duties between author and approver, retirement — no longer apply to the text being
+executed. Whatever is uploaded is what gets signed. Template management remains in
+the product but becomes optional.
+
+**Consequence for evidence.** The portal can no longer reproduce an executed
+agreement from template plus data. The uploaded source document is therefore
+retained as a document version in its own right, and hashed on upload.
+
+### DEC-026 — Stamp details captured by OCR, confirmed by a person
+**Severity:** MEDIUM · **Status:** DECIDED · **Affects:** FR-005, SRS §7
+
+Tesseract reads the uploaded stamp scan and pre-fills the stamp number,
+denomination and issue date; an operator confirms or corrects before the record is
+created.
+
+**Why confirmation is mandatory.** A misread stamp number becomes the legal
+identifier of the instrument, and BR-006 uniqueness is enforced on that value — an
+OCR error could let one physical stamp back into circulation. Automatic acceptance
+was offered and declined.
+
+### DEC-027 — Composition: stamp scan is page 1
+**Severity:** MEDIUM · **Status:** DECIDED · **Affects:** SDD §4 step 4
+
+The executed document is the stamp paper scan as page 1, followed by the agreement
+pages. Signature widgets are placed on the final page.
+
+**Still open for GTIDS legal (DEC-015).** Whether an instrument composed this way —
+rather than the agreement being physically printed on the stamp paper — satisfies
+the stamping requirement in the relevant state. This is the same question already
+raised about physical custody, and it now has more weight.
+
+### DEC-028 — Completion notification includes Accounts
+**Severity:** LOW · **Status:** DECIDED · **Affects:** FR-018, SDD §12
+
+On completion the signed agreement goes to the Agent, the MD and an Accounts
+mailbox. Accounts is a notification-only party: it holds no signing rights and
+appears in no signature record.

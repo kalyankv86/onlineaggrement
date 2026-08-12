@@ -76,7 +76,21 @@ const stampScan = Buffer.from(
     'trailer<</Root 1 0 R>>\n%%EOF\n',
 ).toString('base64');
 
+/** Stand-in for the agreement GTIDS supplies (DEC-025). */
+async function makeAgreementDocument(): Promise<string> {
+  const { PDFDocument, StandardFonts } = await import('pdf-lib');
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([595.28, 841.89]);
+  page.drawText('SERVICE ENGAGEMENT AGREEMENT', { x: 60, y: 780, size: 14, font });
+  page.drawText('Supplied by GTIDS as its own document.', { x: 60, y: 750, size: 11, font });
+  return Buffer.from(await doc.save({ useObjectStreams: false })).toString('base64');
+}
+
+let agreementDocument = '';
+
 async function main(): Promise<void> {
+  agreementDocument = await makeAgreementDocument();
   console.log(`\n${c.bold}GTIDS Agreement Portal — end-to-end demonstration${c.reset}`);
   info(`target: ${API}`);
 
@@ -114,16 +128,12 @@ async function main(): Promise<void> {
   step('3. Agent creates the agreement (FR-002)');
   const types = await call('GET', '/api/v1/templates/types', { token: tokens.agent });
   const type = types.find((t: { code: string }) => t.code === 'SVCAGR') ?? types[0];
-  const templates = await call('GET', `/api/v1/templates?agreementTypeId=${type.id}`, { token: tokens.agent });
-  const versions = await call('GET', `/api/v1/templates/${templates[0].id}/versions`, { token: tokens.agent });
-  const approved = versions.find((v: { status: string }) => v.status === 'APPROVED');
 
   const agreement = await call('POST', '/api/v1/agreements', {
     token: tokens.agent,
     expect: 201,
     body: {
       agreementTypeId: type.id,
-      templateVersionId: approved.id,
       placeOfExecutionState: 'IN-OR',
       data: {
         executionDate: new Date().toISOString().slice(0, 10),
@@ -134,9 +144,9 @@ async function main(): Promise<void> {
         startDate: new Date().toISOString().slice(0, 10),
         consideration: 'Rs. 4,50,000 (Rupees four lakh fifty thousand only)',
       },
+      // DEC-024 — two signing parties; Accounts is attached server-side.
       parties: [
         { partyType: 'AGENT', name: 'Ramesh Kumar', email: 'agent@gtids.example' },
-        { partyType: 'EMPLOYEE', name: 'Sunita Patnaik', email: 'employee@gtids.example' },
         { partyType: 'MD', name: 'Dr. A. K. Mohanty', email: 'md@gtids.example' },
       ],
     },
@@ -144,33 +154,33 @@ async function main(): Promise<void> {
   const id: string = agreement.id;
   ok(`created ${c.cyan}${agreement.agreement_number}${c.reset} in ${agreement.status}`);
 
-  step('4. Allocate the stamp and generate the document (FR-006, FR-009)');
+  step('4. Allocate the stamp and attach the agreement (FR-006, DEC-025, DEC-027)');
   await call('POST', `/api/v1/agreements/${id}/stamp`, {
     token: tokens.agent,
     body: { stampId: stamp.id },
     expect: 201,
   });
-  const generated = await call('POST', `/api/v1/agreements/${id}/generate`, {
+  const generated = await call('POST', `/api/v1/agreements/${id}/document`, {
     token: tokens.agent,
     expect: 201,
+    body: {
+      filename: 'service-agreement.pdf',
+      contentType: 'application/pdf',
+      fileBase64: agreementDocument,
+    },
   });
-  ok(`document generated, three signature widgets reserved — ${generated.documentHash.slice(0, 16)}…`);
+  ok(
+    `stamp scan is page 1, agreement follows — ${generated.pageCount} pages, ` +
+      `${generated.documentHash.slice(0, 16)}…`,
+  );
 
   step('5. The sequence is enforced before anyone signs');
-  const earlyApproval = await fetch(`${API}/api/v1/agreements/${id}/employee-approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.employee}` },
-    body: JSON.stringify({ documentHash: generated.documentHash }),
-  });
-  const earlyBody = await earlyApproval.json();
-  check(earlyApproval.status === 409, `employee approval refused before the agent signs — ${earlyBody.error?.rule} (BR-002)`);
-
   const earlyMd = await fetch(`${API}/api/v1/agreements/${id}/sign/md`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.md}` },
     body: JSON.stringify({ documentHash: generated.documentHash }),
   });
-  check((await earlyMd.json()) && earlyMd.status === 409, 'MD signature refused before approval (BR-003)');
+  check((await earlyMd.json()) && earlyMd.status === 409, 'MD signature refused before the agent signs (BR-003)');
 
   step('6. Agent signs (FR-011)');
   const agentHash = (await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.agent })).documentHash;
@@ -186,29 +196,11 @@ async function main(): Promise<void> {
   const afterAgent = await call('GET', `/api/v1/agreements/${id}/verify-signatures`, { token: tokens.agent });
   check(afterAgent.count === 1 && afterAgent.allValid, 'agent signature applied and valid');
   check(
-    (await call('GET', `/api/v1/agreements/${id}`, { token: tokens.agent })).status === 'PENDING_EMPLOYEE_APPROVAL',
-    'advanced to PENDING_EMPLOYEE_APPROVAL',
+    (await call('GET', `/api/v1/agreements/${id}`, { token: tokens.agent })).status === 'PENDING_MD_SIGNATURE',
+    'advanced straight to PENDING_MD_SIGNATURE (DEC-024)',
   );
 
-  step('7. Employee approves (FR-012 — attested, not an eSign signature)');
-  const employeeHash = (await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.employee })).documentHash;
-
-  const stale = await fetch(`${API}/api/v1/agreements/${id}/employee-approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.employee}` },
-    body: JSON.stringify({ documentHash: generated.documentHash }),
-  });
-  check((await stale.json()).error?.code === 'STALE_DOCUMENT', 'a stale document hash is refused (FR-027)');
-
-  await call('POST', `/api/v1/agreements/${id}/employee-approve`, {
-    token: tokens.employee,
-    body: { documentHash: employeeHash },
-    expect: 201,
-  });
-  const afterEmployee = await call('GET', `/api/v1/agreements/${id}/verify-signatures`, { token: tokens.employee });
-  check(afterEmployee.allValid, 'agent signature STILL valid after the attestation was appended');
-
-  step('8. MD signs (FR-013)');
+  step('7. MD signs (FR-013)');
   const mdHash = (await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.md })).documentHash;
   const mdSign = await call('POST', `/api/v1/agreements/${id}/sign/md`, {
     token: tokens.md,
@@ -217,7 +209,7 @@ async function main(): Promise<void> {
   });
   await call('POST', new URL(mdSign.ceremonyUrl).pathname + '/complete');
 
-  step('9. Completion (FR-016, BR-007)');
+  step('8. Completion (FR-016, BR-007)');
   const final = await call('GET', `/api/v1/agreements/${id}`, { token: tokens.md });
   check(final.status === 'COMPLETED', 'agreement is COMPLETED');
   check(!!final.completed_at, 'completion timestamp recorded');
@@ -230,23 +222,23 @@ async function main(): Promise<void> {
       (s.coversWholeFile ? ' (whole file)' : ' (prefix; later revisions appended)'));
   }
 
-  step('10. Notifications to all three parties (FR-018, BR-008)');
+  step('9. Notifications to the agent, the MD and accounts (FR-018, DEC-028)');
   const notifications = await call('GET', '/api/v1/reports/notifications', { token: tokens.auditor });
   const completed = notifications.filter((n: { event_type: string }) => n.event_type === 'COMPLETED');
   const total = completed.reduce((sum: number, n: { count: string }) => sum + Number(n.count), 0);
-  check(total >= 3, `${total} completion notification recipients recorded (agent, employee, MD)`);
+  check(total >= 3, `${total} completion notification recipients recorded (agent, MD, accounts)`);
   info(completed.map((n: any) => `${n.status}: ${n.count}`).join(', ') || 'none yet — the worker dispatches within 30s');
 
-  step('11. Audit trail and chain integrity (FR-017, FR-025)');
+  step('10. Audit trail and chain integrity (FR-017, FR-025)');
   const audit = await call('GET', `/api/v1/agreements/${id}/audit`, { token: tokens.auditor });
   const events: string[] = audit.entries.map((e: { event_type: string }) => e.event_type);
   for (const required of ['AGREEMENT_CREATED', 'STAMP_ALLOCATED', 'AGREEMENT_GENERATED',
-    'AGENT_SIGNED', 'EMPLOYEE_APPROVED', 'MD_SIGNED', 'AGREEMENT_COMPLETED']) {
+    'AGENT_SIGNED', 'MD_SIGNED', 'AGREEMENT_COMPLETED']) {
     check(events.includes(required), `audit records ${required}`);
   }
   check(audit.chain.intact, `hash chain intact across ${audit.chain.recordCount} records`);
 
-  step('12. Public verification (FR-019, BR-010)');
+  step('11. Public verification (FR-019, BR-010)');
   const qr = await call('GET', `/api/v1/agreements/${id}/qr`, { token: tokens.agent });
   const token = qr.url.split('/').pop();
   const verified = await call('GET', `/api/v1/verify/${token}`);
@@ -258,7 +250,7 @@ async function main(): Promise<void> {
   const byNumber = await call('GET', `/api/v1/verify/${encodeURIComponent(final.agreement_number)}`);
   check(byNumber.found === false, 'the agreement number cannot be used to enumerate the register (AC-17)');
 
-  step('13. The completed agreement is frozen (BR-005)');
+  step('12. The completed agreement is frozen (BR-005)');
   const edit = await fetch(`${API}/api/v1/agreements/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.agent}` },
@@ -266,7 +258,7 @@ async function main(): Promise<void> {
   });
   check(edit.status === 409, 'content edits are refused after completion');
 
-  step('14. Save the final signed PDF');
+  step('13. Save the final signed PDF');
   const download = await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.agent });
   const pdf = Buffer.from(await (await fetch(download.url)).arrayBuffer());
   await fs.mkdir(OUT, { recursive: true });

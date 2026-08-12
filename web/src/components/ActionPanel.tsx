@@ -3,10 +3,8 @@
 import { useActionState, useState } from 'react';
 import {
   startSigning,
-  approveAsEmployee,
   rejectAgreement,
   correctAgreement,
-  generateDocument,
   cancelAgreement,
   type ActionResult,
 } from '@/app/actions';
@@ -38,9 +36,7 @@ export function ActionPanel({
 }: Props) {
   const can = (action: string) => availableActions.includes(action);
 
-  const [genState, genAction, genPending] = useActionState(generateDocument, initial);
   const [signState, signAction, signPending] = useActionState(startSigning, initial);
-  const [approveState, approveAction, approvePending] = useActionState(approveAsEmployee, initial);
   const [rejectState, rejectAction, rejectPending] = useActionState(rejectAgreement, initial);
   const [correctState, correctAction, correctPending] = useActionState(correctAgreement, initial);
   const [cancelState, cancelAction, cancelPending] = useActionState(cancelAgreement, initial);
@@ -48,14 +44,13 @@ export function ActionPanel({
   const [showReject, setShowReject] = useState(false);
   const [showCancel, setShowCancel] = useState(false);
 
-  const problem = [genState, signState, approveState, rejectState, correctState, cancelState].find(
+  const problem = [signState, rejectState, correctState, cancelState].find(
     (s) => s.error,
   );
 
+  // GENERATE is offered by the upload panel, not here (DEC-025).
   const nothingToDo =
-    !can('GENERATE') &&
     !can('AGENT_SIGN_INITIATE') &&
-    !can('EMPLOYEE_APPROVE') &&
     !can('MD_SIGN_INITIATE') &&
     !can('REJECT') &&
     !can('CORRECT') &&
@@ -95,15 +90,6 @@ export function ActionPanel({
       )}
 
       <div className="row">
-        {can('GENERATE') && (
-          <form action={genAction}>
-            <input type="hidden" name="agreementId" value={agreementId} />
-            <button type="submit" disabled={genPending || !hasStamp}>
-              {genPending ? 'Generating…' : 'Generate agreement document'}
-            </button>
-          </form>
-        )}
-
         {can('AGENT_SIGN_INITIATE') && documentHash && (
           <form action={signAction}>
             <input type="hidden" name="agreementId" value={agreementId} />
@@ -112,16 +98,6 @@ export function ActionPanel({
             <input type="hidden" name="documentHash" value={documentHash} />
             <button type="submit" disabled={signPending}>
               {signPending ? 'Starting…' : 'Sign as Agent'}
-            </button>
-          </form>
-        )}
-
-        {can('EMPLOYEE_APPROVE') && documentHash && (
-          <form action={approveAction}>
-            <input type="hidden" name="agreementId" value={agreementId} />
-            <input type="hidden" name="documentHash" value={documentHash} />
-            <button type="submit" disabled={approvePending}>
-              {approvePending ? 'Approving…' : 'Approve this agreement'}
             </button>
           </form>
         )}
@@ -158,13 +134,6 @@ export function ActionPanel({
           </button>
         )}
       </div>
-
-      {can('EMPLOYEE_APPROVE') && (
-        <p className="faint" style={{ marginTop: 14, marginBottom: 0 }}>
-          Approval is recorded against the exact document shown above, with your identity, the
-          time and your network address. It is an attestation, not an Aadhaar signature.
-        </p>
-      )}
 
       {showReject && can('REJECT') && (
         <form action={rejectAction} style={{ marginTop: 16 }}>

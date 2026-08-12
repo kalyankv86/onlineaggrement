@@ -10,6 +10,7 @@ import {
 import { StatusBadge, ProgressRail, Notice } from '@/components/ui';
 import { ActionPanel } from '@/components/ActionPanel';
 import { StampPicker } from '@/components/StampPicker';
+import { AgreementUpload } from '@/components/AgreementUpload';
 import { formatDate, formatDateOnly, AUDIT_LABEL, shortHash } from '@/lib/workflow';
 import { currentPrincipal, hasRole } from '@/lib/session';
 
@@ -99,7 +100,9 @@ export default async function AgreementPage({ params }: { params: Promise<{ id: 
             <h2>Document</h2>
             {!generated ? (
               <p className="muted" style={{ margin: 0 }}>
-                Not generated yet. {agreement.stamp ? '' : 'Allocate a stamp paper first.'}
+                {agreement.stamp
+                  ? 'No agreement attached yet. Upload the document below — the stamp scan becomes page 1.'
+                  : 'Allocate a stamp paper, then attach the agreement document.'}
               </p>
             ) : document ? (
               <>
@@ -189,6 +192,11 @@ export default async function AgreementPage({ params }: { params: Promise<{ id: 
 
           {agreement.status === 'DRAFT' && !agreement.stamp && (
             <StampPicker agreementId={agreement.id} stamps={stamps ?? []} />
+          )}
+
+          {/* DEC-025 — the agreement arrives as GTIDS's own document. */}
+          {agreement.status === 'DRAFT' && (
+            <AgreementUpload agreementId={agreement.id} hasStamp={!!agreement.stamp} />
           )}
         </div>
 

@@ -13,12 +13,27 @@ import { setToken, clearToken } from '@/lib/session';
  * on the user's behalf. The trade is one round trip through the Next server.
  */
 
+export interface StampReading {
+  rawText: string;
+  stampNumber?: string;
+  denomination?: number;
+  stateCode?: string;
+  issueDate?: string;
+  vendor?: string;
+  confidence: Record<string, 'high' | 'low'>;
+  warnings: string[];
+}
+
 export interface ActionResult {
   error?: string;
   rule?: string;
   ok?: boolean;
   ceremonyUrl?: string;
   token?: string;
+  reading?: StampReading;
+  /** Carried between the OCR step and the save step so the scan is uploaded once. */
+  scanBase64?: string;
+  scanContentType?: string;
 }
 
 /** Turn an API refusal into something a signer can act on. */
@@ -86,10 +101,13 @@ export async function createAgreement(_prev: ActionResult, form: FormData): Prom
   try {
     const created = await post<{ id: string }>('/api/v1/agreements', {
       agreementTypeId: form.get('agreementTypeId'),
-      templateVersionId: form.get('templateVersionId'),
+      // Absent for UPLOAD types (DEC-025); the API accepts it as optional.
+      templateVersionId: form.get('templateVersionId') || undefined,
       placeOfExecutionState: form.get('placeOfExecutionState') || undefined,
       data: variables,
-      parties: (['AGENT', 'EMPLOYEE', 'MD'] as const).map((partyType) => ({
+      // DEC-024 — two signing parties. Accounts is attached server-side from the
+      // agreement type and is never sent from the browser, because it signs nothing.
+      parties: (['AGENT', 'MD'] as const).map((partyType) => ({
         partyType,
         name: String(form.get(`${partyType}.name`) ?? '').trim(),
         email: String(form.get(`${partyType}.email`) ?? '').trim(),
@@ -164,22 +182,6 @@ export async function startSigning(_prev: ActionResult, form: FormData): Promise
   }
 }
 
-export async function approveAsEmployee(
-  _prev: ActionResult,
-  form: FormData,
-): Promise<ActionResult> {
-  const id = String(form.get('agreementId'));
-  try {
-    await post(`/api/v1/agreements/${id}/employee-approve`, {
-      documentHash: form.get('documentHash'),
-    });
-  } catch (e) {
-    return toResult(e);
-  }
-  revalidatePath(`/agreements/${id}`);
-  return { ok: true };
-}
-
 export async function rejectAgreement(_prev: ActionResult, form: FormData): Promise<ActionResult> {
   const id = String(form.get('agreementId'));
   const reason = String(form.get('reason') ?? '').trim();
@@ -236,12 +238,60 @@ export async function issuePartyAccess(
   }
 }
 
+// ── Agreement document (DEC-025) ─────────────────────────────────────────────
+
+export async function uploadAgreementDocument(
+  _prev: ActionResult,
+  form: FormData,
+): Promise<ActionResult> {
+  const id = String(form.get('agreementId'));
+  const file = form.get('document') as File | null;
+  if (!file || file.size === 0) return { error: 'Choose the agreement document to attach' };
+  if (file.size > 12 * 1024 * 1024) return { error: 'The agreement exceeds the 12 MB limit' };
+
+  try {
+    await post(`/api/v1/agreements/${id}/document`, {
+      filename: file.name,
+      contentType: file.type || 'application/pdf',
+      fileBase64: Buffer.from(await file.arrayBuffer()).toString('base64'),
+    });
+  } catch (e) {
+    return toResult(e);
+  }
+  revalidatePath(`/agreements/${id}`);
+  return { ok: true };
+}
+
 // ── Stamps ───────────────────────────────────────────────────────────────────
 
-export async function registerStamp(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+/**
+ * DEC-026 — read the scan and return a proposal. Deliberately creates nothing:
+ * the operator confirms the fields before any stamp record exists.
+ */
+export async function readStampScan(_prev: ActionResult, form: FormData): Promise<ActionResult> {
   const file = form.get('scan') as File | null;
   if (!file || file.size === 0) return { error: 'Attach a scan of the stamp paper' };
   if (file.size > 10 * 1024 * 1024) return { error: 'The scan exceeds the 10 MB limit' };
+
+  const scanBase64 = Buffer.from(await file.arrayBuffer()).toString('base64');
+  const scanContentType = file.type || 'application/pdf';
+
+  try {
+    const reading = await post<StampReading>('/api/v1/stamps/ocr', {
+      scanBase64,
+      scanContentType,
+    });
+    // The scan travels back with the proposal so the confirm step does not need
+    // the operator to select the file a second time.
+    return { ok: true, reading, scanBase64, scanContentType };
+  } catch (e) {
+    return toResult(e);
+  }
+}
+
+export async function registerStamp(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const scanBase64 = String(form.get('scanBase64') ?? '');
+  if (!scanBase64) return { error: 'Read the scan first, then confirm the details' };
 
   try {
     await post('/api/v1/stamps', {
@@ -250,8 +300,8 @@ export async function registerStamp(_prev: ActionResult, form: FormData): Promis
       stateCode: form.get('stateCode'),
       issueDate: String(form.get('issueDate') ?? '') || undefined,
       vendor: String(form.get('vendor') ?? '').trim() || undefined,
-      scanBase64: Buffer.from(await file.arrayBuffer()).toString('base64'),
-      scanContentType: file.type || 'application/pdf',
+      scanBase64,
+      scanContentType: String(form.get('scanContentType') ?? 'application/pdf'),
     });
   } catch (e) {
     return toResult(e);
