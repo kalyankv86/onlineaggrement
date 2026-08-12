@@ -9,6 +9,11 @@ Requires=postgresql.service redis-server.service
 # the API fail its storage check and flap; RequiresMountsFor makes systemd wait.
 RequiresMountsFor=/srv/gtids/agreements
 
+# Rate limit restarts. These belong in [Unit] — systemd ignores them in
+# [Service] and logs 'Unknown key name'.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=gtids
@@ -27,10 +32,6 @@ Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/gtids-agreements/browsers
 
 Restart=on-failure
 RestartSec=5s
-# If it cannot stay up for 5 tries in 2 minutes, stop and page someone rather
-# than restart-looping against a broken database or an unmounted NAS.
-StartLimitBurst=5
-StartLimitIntervalSec=120
 
 # Give in-flight signing requests a chance to finish before the process dies.
 KillSignal=SIGTERM
@@ -54,7 +55,11 @@ LockPersonality=true
 MemoryDenyWriteExecute=false
 # The only paths the service may write to.
 ReadWritePaths=/srv/gtids/agreements /var/log/gtids
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required: Node calls os.networkInterfaces() when a server
+# starts listening, which goes through getifaddrs() and opens a netlink
+# socket. Without it the process dies with EAFNOSUPPORT (errno 97) before
+# serving anything.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 LimitNOFILE=65535
 

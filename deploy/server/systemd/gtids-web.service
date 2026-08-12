@@ -3,6 +3,11 @@ Description=GTIDS Agreement Portal — web UI
 After=network-online.target gtids-api.service
 Wants=network-online.target gtids-api.service
 
+# Rate limit restarts. These belong in [Unit] — systemd ignores them in
+# [Service] and logs 'Unknown key name'.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=gtids
@@ -13,8 +18,6 @@ ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -p 3101
 
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=120
 
 KillSignal=SIGTERM
 TimeoutStopSec=20
@@ -40,7 +43,11 @@ LockPersonality=true
 # names .next itself rather than .next/cache, which Next.js may not have created
 # yet on a first deploy.
 ReadWritePaths=/var/log/gtids /opt/gtids-agreements/current/web/.next
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required: Node calls os.networkInterfaces() when a server
+# starts listening, which goes through getifaddrs() and opens a netlink
+# socket. Without it the process dies with EAFNOSUPPORT (errno 97) before
+# serving anything.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 LimitNOFILE=65535
 

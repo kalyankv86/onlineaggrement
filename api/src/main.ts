@@ -53,7 +53,11 @@ async function bootstrap(): Promise<void> {
   await app.listen(port);
 
   log.log(`GTIDS Agreement Portal API listening on ${port} (${config.get('env')})`);
-  log.log(`eSign provider: ${config.get('esign.provider')} | storage: ${config.get('storage.driver')} | renderer: ${config.get('pdf.renderer')}`);
+  log.log(
+    `eSign provider: ${config.get('esign.provider')} | ` +
+      `storage: ${config.get('storage.fsRoot')} | ` +
+      `renderer: ${config.get('pdf.renderer')}`,
+  );
   if (process.env.RUN_SCHEDULER === 'true') log.log('scheduled jobs: ENABLED in this process');
 }
 
