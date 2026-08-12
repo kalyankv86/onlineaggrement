@@ -99,11 +99,34 @@ log "Building release $(basename "$RELEASE")"
 install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$RELEASE"
 
 # Copy the source without the working-tree clutter.
-tar -C "$SOURCE" \
-    --exclude='node_modules' --exclude='.git' --exclude='.next' --exclude='dist' \
-    --exclude='.run' --exclude='storage' --exclude='demo-output' --exclude='screenshots' \
+#
+# Every exclusion is an explicit anchored path. Unanchored patterns match a
+# component at ANY depth: '--exclude=storage' also removed api/src/documents/
+# storage/, the NAS storage driver, and the release failed to build with six
+# unresolved imports. Same trap as an unanchored .gitignore rule.
+tar -C "$SOURCE" --anchored \
+    --exclude='./.git' \
+    --exclude='./.run' \
+    --exclude='./api/node_modules' --exclude='./api/dist' --exclude='./api/coverage' \
+    --exclude='./api/storage' --exclude='./api/.test-storage' --exclude='./api/demo-output' \
+    --exclude='./web/node_modules' --exclude='./web/.next' \
+    --exclude='./web/test-results' --exclude='./web/playwright-report' \
+    --exclude='./spike/pdf-signing/node_modules' --exclude='./spike/pdf-signing/out' \
     -cf - . | tar -C "$RELEASE" -xf -
 chown -R "$APP_USER":"$APP_USER" "$RELEASE"
+
+# Prove the copy is complete before spending minutes building it. A missing
+# source file otherwise surfaces as a confusing compile error several steps later.
+src_count="$(find "$SOURCE/api/src" -name '*.ts' | wc -l)"
+rel_count="$(find "$RELEASE/api/src" -name '*.ts' 2>/dev/null | wc -l)"
+if [[ "$src_count" -ne "$rel_count" ]]; then
+  fail "Release copy is incomplete: $rel_count of $src_count TypeScript files under api/src.
+An exclusion pattern is matching source files. Compare:
+  find $SOURCE/api/src -name '*.ts' | sort > /tmp/src.txt
+  find $RELEASE/api/src -name '*.ts' | sed 's|$RELEASE|$SOURCE|' | sort > /tmp/rel.txt
+  diff /tmp/src.txt /tmp/rel.txt"
+fi
+log "Release copy verified ($rel_count source files)"
 
 log "Installing API dependencies"
 sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && npm ci --omit=dev --silent" \
@@ -116,7 +139,12 @@ sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && npm ci --silent && npm run bui
   || fail "API build failed."
 
 log "Installing Chromium for the PDF renderer"
-sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && npx playwright install chromium" \
+# Not the default ~/.cache/ms-playwright: the services run with ProtectHome=true,
+# so anything under /home is invisible to them and the renderer would fail at the
+# first agreement with a confusing "browser not found".
+BROWSERS="$APP_HOME/browsers"
+install -d -o "$APP_USER" -g "$APP_USER" -m 0755 "$BROWSERS"
+sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && PLAYWRIGHT_BROWSERS_PATH='$BROWSERS' npx playwright install chromium" \
   || fail "Chromium install failed — PDF_RENDERER=playwright would fail at runtime."
 
 log "Building web UI"

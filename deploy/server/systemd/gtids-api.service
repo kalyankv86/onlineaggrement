@@ -20,6 +20,9 @@ ExecStart=/usr/bin/node dist/main.js
 # render cannot compete with a signer's request for the same event loop.
 Environment=RUN_SCHEDULER=false
 
+# Chromium lives outside /home because ProtectHome=true hides it there.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/gtids-agreements/browsers
+
 Restart=on-failure
 RestartSec=5s
 # If it cannot stay up for 5 tries in 2 minutes, stop and page someone rather

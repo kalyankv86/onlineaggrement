@@ -22,6 +22,9 @@ ExecStart=/usr/bin/node dist/worker.js
 # integrity checks. Exactly one worker should run.
 Environment=RUN_SCHEDULER=true
 
+# Chromium lives outside /home because ProtectHome=true hides it there.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/gtids-agreements/browsers
+
 Restart=on-failure
 RestartSec=5s
 # If it cannot stay up for 5 tries in 2 minutes, stop and page someone rather
