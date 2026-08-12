@@ -174,6 +174,21 @@ if [[ $STAGING -eq 1 && "$STORAGE_ROOT" == "/srv/gtids/agreements" ]] && ! mount
       STORAGE_FS_ROOT=/var/lib/gtids/agreements-staging"
 fi
 
+head_ "Web configuration"
+if [[ -f /etc/gtids/web.env ]]; then
+  web_env="$(grep -E '^NODE_ENV=' /etc/gtids/web.env | cut -d= -f2- | tr -d '"')"
+  api_env="$(grep -E '^NODE_ENV=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')"
+  if [[ -n "$api_env" && "$web_env" != "$api_env" ]]; then
+    hmm "web.env NODE_ENV=$web_env but api.env says $api_env — keep them the same"
+  else
+    ok "web and api agree on NODE_ENV=$web_env"
+  fi
+  grep -qE '^API_ORIGIN=' /etc/gtids/web.env \
+    && ok "API_ORIGIN set" || no "API_ORIGIN missing from /etc/gtids/web.env"
+else
+  no "/etc/gtids/web.env not found — run provision.sh"
+fi
+
 head_ "Release build"
 if [[ -d /opt/gtids-agreements/current ]]; then
   [[ -f /opt/gtids-agreements/current/api/dist/main.js ]] \

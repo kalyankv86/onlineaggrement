@@ -217,6 +217,9 @@ else
 fi
 
 if [[ ! -f /etc/gtids/web.env ]]; then
+  # NODE_ENV must match api.env. A mismatch is confusing on its own, and the two
+  # processes make different assumptions from it. The session cookie's Secure flag
+  # is derived from the request protocol rather than from this value.
   cat > /etc/gtids/web.env <<EOF
 NODE_ENV=production
 PORT=3101

@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 
 export const SESSION_COOKIE = 'gtids_session';
 
@@ -33,11 +33,29 @@ export async function getToken(): Promise<string | null> {
   return (await cookies()).get(SESSION_COOKIE)?.value ?? null;
 }
 
+/**
+ * Whether to mark the session cookie `Secure`.
+ *
+ * Derived from the actual connection, not from NODE_ENV. A `Secure` cookie sent
+ * over plain HTTP is discarded by the browser silently: sign-in appears to
+ * succeed, the redirect happens, and the next request arrives with no session —
+ * which looks like "login does nothing" and reports no error anywhere.
+ *
+ * nginx sets X-Forwarded-Proto. Where it is absent (direct access in
+ * development) we fall back to NODE_ENV, and never downgrade a genuinely HTTPS
+ * request.
+ */
+async function shouldUseSecureCookie(): Promise<boolean> {
+  const proto = (await headers()).get('x-forwarded-proto');
+  if (proto) return proto.split(',')[0].trim() === 'https';
+  return process.env.NODE_ENV === 'production';
+}
+
 export async function setToken(token: string, maxAgeSeconds = 60 * 30): Promise<void> {
   (await cookies()).set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: await shouldUseSecureCookie(),
     path: '/',
     maxAge: maxAgeSeconds,
   });
