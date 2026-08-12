@@ -36,7 +36,10 @@ RestrictRealtime=true
 LockPersonality=true
 # The UI never touches the document store directly — it proxies to the API, which
 # is the only component holding storage credentials and authorisation logic.
-ReadWritePaths=/var/log/gtids /opt/gtids-agreements/current/web/.next/cache
+# systemd refuses to start a unit whose ReadWritePaths do not exist, so this
+# names .next itself rather than .next/cache, which Next.js may not have created
+# yet on a first deploy.
+ReadWritePaths=/var/log/gtids /opt/gtids-agreements/current/web/.next
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 LimitNOFILE=65535

@@ -150,6 +150,9 @@ sudo -u "$APP_USER" bash -c "cd '$RELEASE/api' && PLAYWRIGHT_BROWSERS_PATH='$BRO
 log "Building web UI"
 sudo -u "$APP_USER" bash -c "cd '$RELEASE/web' && npm ci --silent && npm run build --silent" \
   || fail "Web build failed."
+# Next.js writes here at run time; the unit lists it under ReadWritePaths and
+# systemd will not start a service whose ReadWritePaths are missing.
+install -d -o "$APP_USER" -g "$APP_USER" -m 0755 "$RELEASE/web/.next/cache"
 
 # ── Migrate ──────────────────────────────────────────────────────────────────
 # Run before the switch: the new code expects the new schema. Migrations here are
