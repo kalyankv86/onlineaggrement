@@ -185,11 +185,24 @@ Production has no seeded users — the seed refuses to run with
 business in a register of legal instruments. The roles themselves *are* created,
 by migration, so the system is usable the moment you add a person:
 
+An absolute path, so it does not matter which directory you are in — running it
+from the source checkout instead of the release tree is an easy mistake and gives
+only `Cannot find module`:
+
 ```bash
-cd /opt/gtids-agreements/current/api
 sudo -u gtids bash -c 'set -a && . /etc/gtids/api.env && set +a && \
-  node dist/scripts/create-user.js \
+  node /opt/gtids-agreements/current/api/dist/scripts/create-user.js \
     --email ops@gtids.org --name "A. Nayak" --role SUPER_ADMIN'
+```
+
+Roles are additive on re-run, and Super Administrator covers configuration and
+user management only — it does not permit signing. Someone who must also execute
+or countersign needs the role for that too:
+
+```bash
+sudo -u gtids bash -c 'set -a && . /etc/gtids/api.env && set +a && \
+  node /opt/gtids-agreements/current/api/dist/scripts/create-user.js \
+    --email md@gtids.org --role MD'
 ```
 
 A strong password is generated and printed **once**. Deliver it out of band and
