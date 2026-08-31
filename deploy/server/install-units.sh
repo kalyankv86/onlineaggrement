@@ -167,8 +167,12 @@ EOF
 systemctl daemon-reload
 
 if nginx -t; then
-  systemctl reload nginx
-  log "nginx configuration valid and reloaded"
+  # reload-or-restart, not reload: an earlier invalid configuration leaves nginx
+  # stopped, and `reload` then fails with "not active, cannot reload" — which
+  # reads like a second fault rather than a consequence of the first.
+  systemctl enable nginx >/dev/null 2>&1 || true
+  systemctl reload-or-restart nginx
+  log "nginx configuration valid and $(systemctl is-active nginx)"
 else
   echo "nginx configuration is invalid — fix before enabling the site." >&2
   exit 1
