@@ -20,7 +20,13 @@ export interface StampIdentifier {
 }
 
 export interface StampReading {
-  /** Everything Tesseract saw, kept so an operator can check a doubtful field. */
+  /**
+   * How the text was obtained. PDF_TEXT means the document carried a real text
+   * layer and the values are exact; OCR means they were inferred from pixels and
+   * every one of them is a guess worth checking.
+   */
+  source: 'PDF_TEXT' | 'OCR';
+  /** Everything that was read, kept so an operator can check a doubtful field. */
   rawText: string;
   /** Every identifier printed on the paper — each is independently unique. */
   identifiers: StampIdentifier[];
@@ -75,6 +81,27 @@ export class StampOcrService {
   async read(scan: Buffer, contentType: string): Promise<StampReading> {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gtids-ocr-'));
     try {
+      /*
+       * An e-Stamp downloaded from the issuer is a generated PDF with a real text
+       * layer. Reading that text gives the certificate number and the SUBIN
+       * reference exactly, with none of the O/0 and I/1 confusion that makes OCR
+       * on a printed-and-rescanned copy risky. Only fall back to rasterising and
+       * OCR when there is no text to read — a photo, a flatbed scan, or a PDF
+       * that is just a wrapped image.
+       */
+      const embedded = await this.extractPdfText(scan, contentType, dir);
+      if (embedded) {
+        const reading = this.extract(embedded);
+        return {
+          ...reading,
+          source: 'PDF_TEXT',
+          warnings: [
+            'Read from the document\'s own text layer rather than by OCR, so the values are exact. Still compare them against the paper before saving.',
+            ...reading.warnings.filter((w) => !/commonly confused by OCR/.test(w)),
+          ],
+        };
+      }
+
       const image = await this.toImage(scan, contentType, dir);
       const base = path.join(dir, 'out');
 
@@ -95,6 +122,40 @@ export class StampOcrService {
       throw new Error(`Could not read the stamp scan: ${(e as Error).message}`);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * The PDF's own text layer, or null when it has none worth using.
+   *
+   * A scanned page wrapped in a PDF yields little or nothing here, which is the
+   * signal to fall back to OCR.
+   */
+  private async extractPdfText(
+    scan: Buffer,
+    contentType: string,
+    dir: string,
+  ): Promise<string | null> {
+    const isPdf = scan.subarray(0, 5).toString() === '%PDF-' || contentType === 'application/pdf';
+    if (!isPdf) return null;
+
+    const file = path.join(dir, 'source.pdf');
+    await fs.writeFile(file, scan);
+    try {
+      // -layout preserves the column alignment the label/value layout depends on.
+      const { stdout } = await run('pdftotext', ['-layout', '-f', '1', '-l', '1', file, '-'], {
+        timeout: 60_000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const text = stdout ?? '';
+      // A wrapped scan produces a handful of stray characters at most. Requiring a
+      // recognisable label as well as length avoids trusting that.
+      const usable = text.replace(/\s+/g, ' ').trim();
+      if (usable.length < 120) return null;
+      if (!/certificate|stamp\s*duty|non\s*judicial/i.test(usable)) return null;
+      return text;
+    } catch {
+      return null; // pdftotext missing or unhappy — OCR will handle it
     }
   }
 
@@ -289,6 +350,7 @@ export class StampOcrService {
     }
 
     return {
+      source: 'OCR',
       rawText: text,
       identifiers,
       stampNumber,

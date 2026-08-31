@@ -55,8 +55,10 @@ export function StampScanForm() {
             onChange={(e) => setScanName(e.target.files?.[0]?.name ?? '')}
           />
           <div className="hint">
-            PDF, PNG or JPEG, up to 10 MB. 300 dpi or better gives the certificate number the best
-            chance of being read correctly.
+            <strong>Best:</strong> the PDF the issuer produced when the e-Stamp was bought — its
+            text can be read exactly. Otherwise a scan or photo (PDF, PNG or JPEG, up to 10 MB);
+            300 dpi or better gives the certificate number the best chance of being read
+            correctly.
           </div>
         </div>
         <button type="submit" className="btn-secondary" disabled={reading}>
@@ -71,11 +73,22 @@ export function StampScanForm() {
           <input type="hidden" name="scanBase64" value={readState.scanBase64 ?? ''} />
           <input type="hidden" name="scanContentType" value={readState.scanContentType ?? ''} />
 
-          <Notice tone="warn" title="Check these against the physical paper before saving">
-            These values were read by OCR. Every identifier below is stored and each one
-            independently blocks the same stamp being registered twice — so it is worth entering
-            all of those the paper carries, and worth getting each one exactly right.
-          </Notice>
+          {proposal.source === 'PDF_TEXT' ? (
+            <Notice tone="success" title="Read from the document's own text — values are exact">
+              This PDF carried a text layer, so the values below were read directly rather than
+              inferred from pixels. Still compare them against the paper. Every identifier is
+              stored, and each one independently blocks the same stamp being registered twice.
+            </Notice>
+          ) : (
+            <Notice tone="warn" title="Read by OCR — check every value against the paper">
+              These were inferred from an image, so any of them can be wrong; watch for O/0 and
+              I/1 in particular. Every identifier is stored and each one independently blocks the
+              same stamp being registered twice, so enter all of those the paper carries.
+              <br />
+              <strong>If you have the PDF the issuer produced</strong>, upload that instead — it
+              can be read exactly.
+            </Notice>
+          )}
 
           {proposal.warnings?.length > 0 && (
             <ul className="faint" style={{ paddingLeft: 18, marginTop: -6 }}>

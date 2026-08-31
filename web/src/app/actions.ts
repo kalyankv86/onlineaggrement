@@ -16,6 +16,8 @@ import { setToken, clearToken } from '@/lib/session';
 export type StampIdentifierKind = 'CERTIFICATE_NO' | 'UNIQUE_DOC_REF' | 'PAPER_SERIAL' | 'OTHER';
 
 export interface StampReading {
+  /** PDF_TEXT: exact values from the document's text layer. OCR: inferred. */
+  source: 'PDF_TEXT' | 'OCR';
   rawText: string;
   /** Every identifier printed on the paper; each independently blocks a duplicate. */
   identifiers: { kind: StampIdentifierKind; value: string }[];

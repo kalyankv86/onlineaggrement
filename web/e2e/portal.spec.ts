@@ -73,9 +73,7 @@ async function agreementAwaitingMd(page: Page): Promise<string> {
     buffer: AGREEMENT_PDF,
   });
   await page.getByRole('button', { name: 'Read the scan' }).click();
-  await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
-    timeout: 60_000,
-  });
+  await expect(page.getByLabel(/Certificate number/)).toBeVisible({ timeout: 60_000 });
   await page
     .getByLabel(/Certificate number/)
     .fill(`IN-AP${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
@@ -151,9 +149,9 @@ test.describe('GTIDS Agreement Portal', () => {
     await page.getByRole('button', { name: 'Read the scan' }).click();
 
     // OCR proposes; nothing is saved until a person confirms.
-    await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
-      timeout: 60_000,
-    });
+    // The confirmation step has appeared. Asserted on the field rather than the
+    // notice, whose wording depends on whether the upload had a text layer.
+    await expect(page.getByLabel(/Certificate number/)).toBeVisible({ timeout: 60_000 });
 
     // DEC-029 — all three identifiers the paper carries, as on a real AP e-Stamp.
     const suffix = Date.now();
@@ -179,9 +177,9 @@ test.describe('GTIDS Agreement Portal', () => {
       buffer: AGREEMENT_PDF,
     });
     await page.getByRole('button', { name: 'Read the scan' }).click();
-    await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
-      timeout: 60_000,
-    });
+    // The confirmation step has appeared. Asserted on the field rather than the
+    // notice, whose wording depends on whether the upload had a text layer.
+    await expect(page.getByLabel(/Certificate number/)).toBeVisible({ timeout: 60_000 });
 
     await page.getByLabel(/Certificate number/).fill(`in-ap ${suffix} y`.toLowerCase());
     await page.getByLabel('Unique document reference').fill('');

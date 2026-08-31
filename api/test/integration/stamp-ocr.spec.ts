@@ -89,6 +89,40 @@ const popplerAvailable = has('pdftoppm', '-v');
 describe('Stamp OCR (DEC-026)', () => {
   const ocr = new StampOcrService();
 
+  (popplerAvailable ? it : it.skip)(
+    'prefers the PDF text layer, which an issued e-Stamp has',
+    async () => {
+      // The certificate the issuer produces is a generated PDF, not a scan. Its
+      // text layer gives exact values, so OCR's characteristic O/0 and I/1
+      // confusion never arises.
+      const reading = await ocr.read(await stampPaperScan(), 'application/pdf');
+
+      expect(reading.source).toBe('PDF_TEXT');
+      expect(reading.stampNumber).toBe('IN-AP77702625151064Y');
+      expect(reading.identifiers.find((i) => i.kind === 'UNIQUE_DOC_REF')?.value)
+        .toBe('SUBIN-APAP1816830336771257804039Y');
+      expect(reading.denomination).toBe(100);
+      expect(reading.warnings.join(' ')).toMatch(/text layer rather than by OCR/);
+      // The OCR-confusion caveat is meaningless here and is not shown.
+      expect(reading.warnings.join(' ')).not.toMatch(/commonly confused by OCR/);
+    },
+  );
+
+  (ocrAvailable && popplerAvailable ? it : it.skip)(
+    'falls back to OCR for a scan with no text layer',
+    async () => {
+      // A photographed or flatbed-scanned paper: an image wrapped in a PDF.
+      const { PDFDocument: Doc } = await import('pdf-lib');
+      const wrapped = await Doc.create();
+      wrapped.addPage([400, 300]); // no text at all
+      const reading = await ocr.read(
+        Buffer.from(await wrapped.save({ useObjectStreams: false })),
+        'application/pdf',
+      );
+      expect(reading.source).toBe('OCR');
+    },
+  );
+
   (ocrAvailable && popplerAvailable ? it : it.skip)(
     'reads all three identifiers from a real AP e-Stamp layout',
     async () => {
