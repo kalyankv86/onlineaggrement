@@ -30,7 +30,9 @@ Environment=RUN_SCHEDULER=true
 # Chromium lives outside /home because ProtectHome=true hides it there.
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/gtids-agreements/browsers
 
-Restart=on-failure
+# always, not on-failure: a clean exit still means the worker has stopped
+# dispatching notifications and reconciling signatures, which is a fault.
+Restart=always
 RestartSec=5s
 
 # Give in-flight signing requests a chance to finish before the process dies.
