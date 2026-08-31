@@ -1,13 +1,33 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import { IsISO8601, IsNumber, IsOptional, IsString, Length } from 'class-validator';
+import {
+  IsArray, IsIn, IsISO8601, IsNumber, IsOptional, IsString, Length, ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { StampsService } from './stamps.service';
 import { StampOcrService } from './stamp-ocr.service';
 import { CurrentUser, Roles } from '../auth/auth.guard';
 import { Principal } from '../auth/auth.service';
 import { ValidationError } from '../common/errors/domain.errors';
 
+class StampIdentifierDto {
+  @IsIn(['CERTIFICATE_NO', 'UNIQUE_DOC_REF', 'PAPER_SERIAL', 'OTHER'])
+  kind!: 'CERTIFICATE_NO' | 'UNIQUE_DOC_REF' | 'PAPER_SERIAL' | 'OTHER';
+  @IsString() @Length(6, 60) value!: string;
+}
+
 class RegisterStampDto {
   @IsOptional() @IsString() @Length(1, 100) stampNumber?: string;
+  /** All identifiers printed on the paper; each is independently unique. */
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => StampIdentifierDto)
+  identifiers?: StampIdentifierDto[];
+  @IsOptional() @IsString() issuer?: string;
+  @IsOptional() @IsString() accountReference?: string;
+  @IsOptional() @IsString() ddoCode?: string;
+  @IsOptional() @IsString() documentDescription?: string;
+  @IsOptional() @IsString() propertyDescription?: string;
+  @IsOptional() @IsNumber() considerationPrice?: number;
+  @IsOptional() @IsString() firstParty?: string;
+  @IsOptional() @IsString() secondParty?: string;
   @IsNumber() denomination!: number;
   @IsString() @Length(2, 10) stateCode!: string;
   @IsOptional() @IsISO8601() issueDate?: string;
@@ -63,10 +83,19 @@ export class StampsController {
     return this.stamps.register(
       {
         stampNumber: dto.stampNumber,
+        identifiers: dto.identifiers,
         denomination: dto.denomination,
         stateCode: dto.stateCode,
         issueDate: dto.issueDate,
         vendor: dto.vendor,
+        issuer: dto.issuer,
+        accountReference: dto.accountReference,
+        ddoCode: dto.ddoCode,
+        documentDescription: dto.documentDescription,
+        propertyDescription: dto.propertyDescription,
+        considerationPrice: dto.considerationPrice,
+        firstParty: dto.firstParty,
+        secondParty: dto.secondParty,
         scan,
         scanContentType: dto.scanContentType ?? 'application/pdf',
       },

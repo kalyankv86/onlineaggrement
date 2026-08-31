@@ -140,6 +140,84 @@ describe('database-enforced invariants', () => {
     });
   });
 
+  describe('DEC-029 — three identifiers, each independently unique', () => {
+    const identifiersOf = (stampId: string) => [
+      { stamp_paper_id: stampId, kind: 'CERTIFICATE_NO', value: 'IN-AP77702625151064Y', normalized: 'INAP77702625151064Y' },
+      { stamp_paper_id: stampId, kind: 'UNIQUE_DOC_REF', value: 'SUBIN-APAP1816830336771257804039Y', normalized: 'SUBINAPAP1816830336771257804039Y' },
+      { stamp_paper_id: stampId, kind: 'PAPER_SERIAL', value: 'FH 0001752181', normalized: 'FH0001752181' },
+    ];
+
+    it('blocks re-registration by ANY of the three, however it is written', async () => {
+      const first = await makeStamp('AP-REAL-1');
+      await knex('stamp_identifiers').insert(identifiersOf(first.id));
+
+      // A real second row, so a rejection can only come from the unique index
+      // and never from a dangling foreign key.
+      const second = await makeStamp('AP-REAL-2');
+
+      const attempts: [string, string, string][] = [
+        ['certificate number as printed', 'CERTIFICATE_NO', 'INAP77702625151064Y'],
+        ['certificate number, hyphens dropped', 'CERTIFICATE_NO', 'INAP77702625151064Y'],
+        ['certificate number, lowercase and spaced', 'CERTIFICATE_NO', 'INAP77702625151064Y'],
+        ['the SUBIN reference alone', 'UNIQUE_DOC_REF', 'SUBINAPAP1816830336771257804039Y'],
+        ['the paper serial alone', 'PAPER_SERIAL', 'FH0001752181'],
+      ];
+
+      for (const [label, kind, normalized] of attempts) {
+        await expect(
+          knex('stamp_identifiers').insert({
+            stamp_paper_id: second.id,
+            kind,
+            value: normalized,
+            normalized,
+          }),
+        ).rejects.toThrow(/uq_stamp_identifier_normalized/);
+        expect(label).toBeTruthy();
+      }
+    });
+
+    it('accepts a genuinely different stamp', async () => {
+      const first = await makeStamp('AP-DIFF-1');
+      await knex('stamp_identifiers').insert(identifiersOf(first.id));
+
+      const other = await makeStamp('AP-DIFF-2');
+      await expect(
+        knex('stamp_identifiers').insert({
+          stamp_paper_id: other.id,
+          kind: 'CERTIFICATE_NO',
+          value: 'IN-AP99900011122233X',
+          normalized: 'INAP99900011122233X',
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('refuses an identifier too short to be meaningful', async () => {
+      const stamp = await makeStamp('AP-SHORT');
+      await expect(
+        knex('stamp_identifiers').insert({
+          stamp_paper_id: stamp.id,
+          kind: 'OTHER',
+          value: '100',
+          normalized: '100',
+        }),
+      ).rejects.toThrow(/stamp_identifiers_min_length/);
+    });
+
+    it('allows only one identifier of each kind per stamp', async () => {
+      const stamp = await makeStamp('AP-KIND');
+      await knex('stamp_identifiers').insert({
+        stamp_paper_id: stamp.id, kind: 'CERTIFICATE_NO',
+        value: 'IN-AP11111111111111A', normalized: 'INAP11111111111111A',
+      });
+      await expect(
+        knex('stamp_identifiers').insert({
+          stamp_paper_id: stamp.id, kind: 'CERTIFICATE_NO',
+          value: 'IN-AP22222222222222B', normalized: 'INAP22222222222222B',
+        }),
+      ).rejects.toThrow(/uq_stamp_identifier_kind_per_stamp/);
+    });
+  });
+
   describe('AC-15 / BR-009 — audit records are append-only', () => {
     it('rejects UPDATE', async () => {
       const audit = app.get(AuditService);

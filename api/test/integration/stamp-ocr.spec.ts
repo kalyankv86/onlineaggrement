@@ -24,28 +24,43 @@ const has = (cmd: string, flag = '--version'): boolean => {
   }
 };
 
-/** A stand-in for a scanned ₹100 non-judicial stamp paper, rendered as a PDF. */
+/**
+ * A scanned ₹100 SHCIL e-Stamp, reproducing the layout of the real Andhra Pradesh
+ * certificate GTIDS supplied — including the two traps it contains: the duty
+ * amount sits after "Stamp Duty Amount(Rs.)  :" where a bracket breaks a naive
+ * pattern, and "Consideration Price (Rs.): 0" appears earlier on the page, so a
+ * loose search reads a ₹100 stamp as ₹0.
+ */
 async function stampPaperScan(): Promise<Buffer> {
   const doc = await PDFDocument.create();
-  const page = doc.addPage([595.28, 420]);
+  const page = doc.addPage([595.28, 700]);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const plain = await doc.embedFont(StandardFonts.Helvetica);
 
-  const line = (t: string, y: number, size = 11, font = plain) =>
-    page.drawText(t, { x: 40, y, size, font, color: rgb(0, 0, 0) });
+  let y = 660;
+  const line = (t: string, size = 11, font = plain) => {
+    page.drawText(t, { x: 36, y, size, font, color: rgb(0, 0, 0) });
+    y -= size + 9;
+  };
 
-  line('GOVERNMENT OF ODISHA', 380, 15, bold);
-  line('INDIA NON JUDICIAL', 358, 13, bold);
-  line('e-Stamp', 338, 11);
-  line('Certificate No.        : OR12345678901234', 306, 11);
-  line('Certificate Issued Date: 14/03/2026', 286, 11);
-  line('Account Reference      : NONACC (SV)/ or12345/ OD-KHO', 266, 11);
-  line('Stamp Duty Paid By     : GRAMTARANG INCLUSIVE DEVELOPMENT SERVICES', 246, 11);
-  line('Description of Document: Article 5 Agreement', 226, 11);
-  line('Consideration Price (Rs.): 0', 206, 11);
-  line('Rs. 100', 176, 16, bold);
-  line('(One Hundred only)', 156, 11);
-  line('Licensed Stamp Vendor  : Treasury Bhubaneswar', 130, 11);
+  line('INDIA NON JUDICIAL', 15, bold);
+  line('Government of Andhra Pradesh', 14, bold);
+  line('e-Stamp', 12);
+  line('Certificate No.          :  IN-AP77702625151064Y');
+  line('Certificate Issued Date  :  02-Apr-2026 11:05 AM');
+  line('Account Reference        :  NEWIMPACC (IV)/ ap18168303/ AP-VKP');
+  line('DDO Code                 :  27002308001 O/o IG R');
+  line('Unique Doc. Reference    :  SUBIN-APAP1816830336771257804039Y');
+  line('Purchased by             :  GRAM TARANG INCLUSIVE DEVELOPMENT SERVICES PVT LTD');
+  line('Description of Document  :  Article 7 Agreement');
+  line('Property Description     :  BANK GUARANTEE');
+  line('Consideration Price (Rs.):  0');
+  line('First Party              :  GRAM TARANG INCLUSIVE DEVELOPMENT SERVICES PVT LTD');
+  line('Second Party             :  UNION BANK OF INDIA');
+  line('Stamp Duty Amount(Rs.)   :  100');
+  line('(One Hundred only)');
+  line('Please write or type below this line');
+  line('FH 0001752181', 13, bold);
 
   return Buffer.from(await doc.save({ useObjectStreams: false }));
 }
@@ -75,16 +90,39 @@ describe('Stamp OCR (DEC-026)', () => {
   const ocr = new StampOcrService();
 
   (ocrAvailable && popplerAvailable ? it : it.skip)(
-    'reads the fields a person then confirms',
+    'reads all three identifiers from a real AP e-Stamp layout',
     async () => {
       const reading = await ocr.read(await stampPaperScan(), 'application/pdf');
 
       expect(reading.rawText.length).toBeGreaterThan(50);
-      expect(reading.stampNumber).toBe('OR12345678901234');
+
+      const byKind = Object.fromEntries(reading.identifiers.map((i) => [i.kind, i.value]));
+      expect(byKind.CERTIFICATE_NO).toBe('IN-AP77702625151064Y');
+      expect(byKind.UNIQUE_DOC_REF).toBe('SUBIN-APAP1816830336771257804039Y');
+      expect(byKind.PAPER_SERIAL).toMatch(/FH\s?0001752181/);
+
+      expect(reading.stampNumber).toBe('IN-AP77702625151064Y');
+      expect(reading.stateCode).toBe('IN-AP');
+      expect(reading.issueDate).toBe('2026-04-02');
+
+      // The duty, not the consideration price printed above it.
       expect(reading.denomination).toBe(100);
-      expect(reading.stateCode).toBe('IN-OR');
-      expect(reading.issueDate).toBe('2026-03-14');
-      expect(reading.vendor).toMatch(/Treasury/i);
+      expect(reading.considerationPrice).toBe(0);
+      expect(reading.confidence.denomination).toBe('high');
+
+      expect(reading.secondParty).toBe('UNION BANK OF INDIA');
+      expect(reading.propertyDescription).toBe('BANK GUARANTEE');
+    },
+  );
+
+  (ocrAvailable && popplerAvailable ? it : it.skip)(
+    'never treats the account reference as identifying the stamp',
+    async () => {
+      // It names the vendor's account and repeats across every stamp they issue;
+      // indexing it uniquely would reject legitimate stamps.
+      const reading = await ocr.read(await stampPaperScan(), 'application/pdf');
+      expect(reading.identifiers.map((i) => i.kind)).not.toContain('ACCOUNT_REFERENCE');
+      expect(reading.accountReference).toMatch(/NEWIMPACC/i);
     },
   );
 
@@ -99,7 +137,8 @@ describe('Stamp OCR (DEC-026)', () => {
       );
 
       expect(reading.stampNumber).toBeUndefined();
-      expect(reading.warnings.join(' ')).toMatch(/No stamp number could be read/);
+      expect(reading.identifiers).toEqual([]);
+      expect(reading.warnings.join(' ')).toMatch(/No identifier could be read/);
     },
   );
 

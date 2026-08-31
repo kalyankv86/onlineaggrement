@@ -7,13 +7,30 @@ import { ConflictError, NotFoundError, ValidationError } from '../common/errors/
 
 export interface RegisterStampInput {
   stampNumber?: string;
+  /**
+   * Every identifier printed on the paper. Each is independently unique
+   * (migration 014), so recording all of them means getting any single one right
+   * is enough to catch a stamp that has already been registered.
+   */
+  identifiers?: { kind: 'CERTIFICATE_NO' | 'UNIQUE_DOC_REF' | 'PAPER_SERIAL' | 'OTHER'; value: string }[];
   denomination: number;
   stateCode: string;
   issueDate?: string;
   vendor?: string;
+  issuer?: string;
+  accountReference?: string;
+  ddoCode?: string;
+  documentDescription?: string;
+  propertyDescription?: string;
+  considerationPrice?: number;
+  firstParty?: string;
+  secondParty?: string;
   scan: Buffer;
   scanContentType: string;
 }
+
+/** Uppercase alphanumerics — the form uniqueness is enforced on. */
+const normalize = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 /**
  * Physical stamp inventory (FR-005, FR-006, BR-006).
@@ -39,6 +56,44 @@ export class StampsService {
 
     const stored = await this.documents.storeStampScan(input.scan, input.scanContentType);
 
+    // Assemble the identifier set, with the primary number included even if the
+    // caller did not list it separately.
+    const identifiers = [...(input.identifiers ?? [])];
+    if (input.stampNumber && !identifiers.some((i) => normalize(i.value) === normalize(input.stampNumber!))) {
+      identifiers.unshift({ kind: 'CERTIFICATE_NO', value: input.stampNumber });
+    }
+    const usable = identifiers.filter((i) => normalize(i.value).length >= 6);
+    if (usable.length === 0) {
+      throw new ValidationError(
+        'At least one identifier of six characters or more is required — the certificate number, the unique document reference, or the paper serial',
+      );
+    }
+
+    /*
+     * Report a duplicate against the identifier the operator actually entered,
+     * naming the existing stamp. A bare unique-violation would say only that
+     * something collided, leaving them to work out which of three numbers and
+     * which existing record.
+     */
+    const clashes = await this.knex('stamp_identifiers')
+      .join('stamp_papers', 'stamp_papers.id', 'stamp_identifiers.stamp_paper_id')
+      .whereIn('stamp_identifiers.normalized', usable.map((i) => normalize(i.value)))
+      .select(
+        'stamp_identifiers.normalized',
+        'stamp_identifiers.value',
+        'stamp_identifiers.kind',
+        'stamp_papers.id as stamp_id',
+        'stamp_papers.status',
+      );
+    if (clashes.length > 0) {
+      const c = clashes[0];
+      throw new ConflictError(
+        `${c.value} is already registered as the ${String(c.kind).replace(/_/g, ' ').toLowerCase()} of an existing stamp, currently ${c.status}. The same physical stamp cannot be registered twice.`,
+        'BR-006',
+        { existingStampId: c.stamp_id, matchedOn: c.kind, value: c.value },
+      );
+    }
+
     return this.knex.transaction(async (trx) => {
       const [row] = await trx('stamp_papers')
         .insert({
@@ -50,6 +105,14 @@ export class StampsService {
           file_key: stored.fileKey,
           document_hash: stored.documentHash,
           status: 'AVAILABLE',
+          issuer: input.issuer ?? null,
+          account_reference: input.accountReference ?? null,
+          ddo_code: input.ddoCode ?? null,
+          document_description: input.documentDescription ?? null,
+          property_description: input.propertyDescription ?? null,
+          consideration_price: input.considerationPrice ?? null,
+          first_party: input.firstParty ?? null,
+          second_party: input.secondParty ?? null,
           created_by: actorId,
         })
         .returning('id')
@@ -63,6 +126,27 @@ export class StampsService {
           throw e;
         });
 
+      try {
+        await trx('stamp_identifiers').insert(
+          usable.map((i) => ({
+            stamp_paper_id: row.id,
+            kind: i.kind,
+            value: i.value.trim(),
+            normalized: normalize(i.value),
+          })),
+        );
+      } catch (e) {
+        // The pre-check above races: two operators registering the same stamp at
+        // once both pass it. The index is what actually decides.
+        if ((e as { code?: string }).code === '23505') {
+          throw new ConflictError(
+            'One of these identifiers was registered by someone else a moment ago',
+            'BR-006',
+          );
+        }
+        throw e;
+      }
+
       await this.audit.record(
         AuditEvent.STAMP_UPLOADED,
         {
@@ -71,6 +155,7 @@ export class StampsService {
           denomination: input.denomination,
           stateCode: input.stateCode,
           documentHash: stored.documentHash,
+          identifiers: usable.map((i) => ({ kind: i.kind, value: i.value })),
         },
         { actorId },
         trx,

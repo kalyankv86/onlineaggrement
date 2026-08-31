@@ -337,3 +337,51 @@ raised about physical custody, and it now has more weight.
 On completion the signed agreement goes to the Agent, the MD and an Accounts
 mailbox. Accounts is a notification-only party: it holds no signing rights and
 appears in no signature record.
+
+### DEC-029 — All printed identifiers are recorded, each independently unique
+**Severity:** HIGH · **Status:** DECIDED by GTIDS · **Affects:** FR-005, FR-006, BR-006
+
+Reviewing an actual Andhra Pradesh SHCIL e-Stamp supplied by GTIDS showed it
+carries three distinct identifiers:
+
+| | |
+|---|---|
+| Certificate No. | `IN-AP77702625151064Y` |
+| Unique Doc. Reference | `SUBIN-APAP1816830336771257804039Y` |
+| Paper serial | `FH 0001752181` |
+
+With a single `stamp_number` field, two operators recording the same physical
+stamp under different numbers create two AVAILABLE records and BR-006 is defeated
+— not by a bug, but by ambiguity over which number is *the* number.
+
+**Decision.** All identifiers are stored in `stamp_identifiers`, each unique
+across the whole table. Getting any one right is enough to catch a duplicate.
+
+**Normalisation is part of the decision.** Uniqueness is enforced on an uppercase
+alphanumeric form, because `IN-AP777…`, `INAP777…` and `in-ap 777…` are the same
+stamp and a raw index accepts all three.
+
+**Excluded on purpose:** the Account Reference. On this certificate it reads
+`NEWIMPACC (IV)/ap18168303/AP-VKP/…` — the *vendor's* account, repeated across
+every stamp that vendor issues. Treating it as identifying would reject the second
+genuine stamp bought from the same vendor. It is stored as an ordinary column.
+
+**Also captured for cross-checking:** issuer, DDO code, document and property
+description, consideration price, and the First/Second Party printed on the stamp.
+Those party names could later be checked against the agreement's own parties.
+
+### DEC-030 — "Please write or type below this line" (OPEN)
+**Severity:** HIGH · **Status:** OPEN · **Owner:** GTIDS Legal · **Affects:** DEC-027, DEC-015
+
+The real stamp paper carries a printed rule across the middle and the instruction
+*"Please write or type below this line"*, with roughly 60% of the sheet left blank
+beneath it. The convention this document is designed for is that the agreement
+text begins **on the stamp paper itself**.
+
+DEC-027 instead places the stamp scan as page 1 with the agreement on following
+pages. That may be acceptable, but it is not what the instrument is laid out for,
+and it is the same question already raised as DEC-015.
+
+**Needed:** a determination from GTIDS legal, before any agreement is executed for
+real. Changing the composition now is inexpensive; changing it after execution is
+not.

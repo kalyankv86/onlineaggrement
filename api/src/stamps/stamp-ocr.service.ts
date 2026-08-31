@@ -7,18 +7,45 @@ import * as path from 'path';
 
 const run = promisify(execFile);
 
+/**
+ * Kinds that identify one physical stamp. The account reference is excluded on
+ * purpose: it names the vendor's account and repeats across every stamp they
+ * issue, so treating it as unique would reject legitimate stamps.
+ */
+export type StampIdentifierKind = 'CERTIFICATE_NO' | 'UNIQUE_DOC_REF' | 'PAPER_SERIAL';
+
+export interface StampIdentifier {
+  kind: StampIdentifierKind;
+  value: string;
+}
+
 export interface StampReading {
   /** Everything Tesseract saw, kept so an operator can check a doubtful field. */
   rawText: string;
+  /** Every identifier printed on the paper — each is independently unique. */
+  identifiers: StampIdentifier[];
+  /** The certificate number, or whichever identifier is the primary one. */
   stampNumber?: string;
   denomination?: number;
   stateCode?: string;
   issueDate?: string;
   vendor?: string;
+  issuer?: string;
+  accountReference?: string;
+  ddoCode?: string;
+  documentDescription?: string;
+  propertyDescription?: string;
+  considerationPrice?: number;
+  firstParty?: string;
+  secondParty?: string;
   /** Per-field, so the UI can highlight what it is unsure about. */
   confidence: Record<string, 'high' | 'low'>;
   warnings: string[];
 }
+
+/** Uppercase alphanumerics: the form uniqueness is enforced on (migration 014). */
+export const normalizeIdentifier = (value: string): string =>
+  value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 /**
  * Reads a scanned ₹100 non-judicial stamp paper (DEC-026).
@@ -103,42 +130,120 @@ export class StampOcrService {
     const confidence: Record<string, 'high' | 'low'> = {};
     const warnings: string[] = [];
 
-    // Certificate / stamp number: usually labelled, and long. OCR commonly
-    // confuses O/0 and I/1 in these, which is precisely why it is confirmed.
-    let stampNumber: string | undefined;
-    const labelled = flat.match(
-      /(?:certificate\s*no|cert\.?\s*no|stamp\s*no|serial\s*no)\.?\s*[:\-]?\s*([A-Z0-9\-\/]{6,25})/i,
-    );
-    if (labelled) {
-      stampNumber = labelled[1].toUpperCase();
-      confidence.stampNumber = 'high';
-    } else {
-      const bare = flat.match(/\b([A-Z]{2}[A-Z0-9]{6,20})\b/);
-      if (bare) {
-        stampNumber = bare[1].toUpperCase();
-        confidence.stampNumber = 'low';
-        warnings.push('Stamp number was not labelled in the scan — check it carefully.');
+    /*
+     * Identifiers. A SHCIL e-Stamp prints three, and each is independently unique
+     * (migration 014): recording all of them means getting any one right is enough
+     * to catch a stamp entered twice.
+     */
+    const identifiers: StampIdentifier[] = [];
+    const addIdentifier = (kind: StampIdentifierKind, value?: string) => {
+      if (!value) return;
+      const trimmed = value.trim().replace(/[.,;]+$/, '').toUpperCase();
+      if (normalizeIdentifier(trimmed).length < 6) return;
+      if (identifiers.some((i) => normalizeIdentifier(i.value) === normalizeIdentifier(trimmed))) return;
+      identifiers.push({ kind, value: trimmed });
+    };
+
+    // Anchored on the printed label. An unanchored search picks up whichever
+    // long token appears first, which on this layout is the barcode.
+    const labelled = (label: RegExp): string | undefined => flat.match(label)?.[1]?.trim();
+
+    /*
+     * Free-text values are read line by line, not from the flattened text.
+     * Flattening runs one value into the next label — "BANK GUARANTEE" became
+     * "BANK GUARANTEE Consideration Price" — because a permissive character class
+     * has nothing to stop at. Each label and value occupy their own line.
+     */
+    const lineValue = (label: RegExp): string | undefined => {
+      for (const line of text.split('\n')) {
+        const m = line.match(new RegExp(`^\\s*${label.source}\\s*[:\\-]\\s*(.+?)\\s*$`, 'i'));
+        if (m?.[1]) return m[1].trim();
       }
+      return undefined;
+    };
+
+    const certificateNo = labelled(
+      /(?:certificate\s*no|cert\.?\s*no|stamp\s*no|serial\s*no)\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]{5,30})/i,
+    );
+    const uniqueDocRef = labelled(
+      /unique\s*doc\.?\s*reference\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]{5,45})/i,
+    );
+    addIdentifier('CERTIFICATE_NO', certificateNo);
+    addIdentifier('UNIQUE_DOC_REF', uniqueDocRef);
+
+    // Stored, but never treated as identifying the individual stamp.
+    const accountReference = lineValue(/account\s*reference/);
+    const ddoCode = lineValue(/ddo\s*code/);
+
+    // The pre-printed paper serial, usually bottom-right and rarely labelled:
+    // two letters, whitespace, then a long run of digits.
+    const serial = flat.match(/\b([A-Z]{2}\s?\d{7,12})\b/);
+    if (serial && !/^(IN|SU)/i.test(serial[1])) addIdentifier('PAPER_SERIAL', serial[1]);
+
+    let stampNumber = certificateNo?.toUpperCase();
+    if (stampNumber) {
+      confidence.stampNumber = 'high';
+    } else if (identifiers.length > 0) {
+      // Fall back to whatever was found, so the operator has something to check
+      // against the paper rather than an empty field.
+      stampNumber = identifiers[0].value;
+      confidence.stampNumber = 'low';
+      warnings.push('No certificate number was labelled — using another identifier from the scan.');
     }
-    if (stampNumber && /[OIl]/.test(stampNumber)) {
+    if (stampNumber && /[OIl]/.test(stampNumber.replace(/^IN-?/i, ''))) {
       confidence.stampNumber = 'low';
       warnings.push('Stamp number contains characters commonly confused by OCR (O/0, I/1).');
     }
 
-    // Denomination.
+    /*
+     * Duty amount, anchored on its own label.
+     *
+     * An unanchored "Rs. <number>" search is wrong on the real layout twice over:
+     * the value sits after "Stamp Duty Amount(Rs.)  :", where the bracket breaks a
+     * naive pattern, and "Consideration Price (Rs.): 0" appears earlier on the
+     * page — so the loose version reads a ₹100 stamp as ₹0.
+     */
     let denomination: number | undefined;
-    const amount = flat.match(/(?:rs\.?|inr|₹)\s*([0-9][0-9,]{0,8})/i);
-    if (amount) {
-      denomination = Number(amount[1].replace(/,/g, ''));
+    const duty = flat.match(
+      /stamp\s*duty\s*(?:amount)?\s*\(?\s*(?:rs\.?|inr|₹)?\s*\)?\s*[:\-]?\s*([0-9][0-9,]{0,8})/i,
+    );
+    if (duty) {
+      denomination = Number(duty[1].replace(/,/g, ''));
       confidence.denomination = 'high';
-    } else if (/one\s+hundred/i.test(flat)) {
-      denomination = 100;
-      confidence.denomination = 'low';
+    } else {
+      const anyAmount = flat.match(/(?:rs\.?|inr|₹)\s*\.?\s*([0-9][0-9,]{0,8})/i);
+      if (anyAmount) {
+        denomination = Number(anyAmount[1].replace(/,/g, ''));
+        confidence.denomination = 'low';
+        warnings.push('Duty amount was not labelled — check it against the paper.');
+      } else if (/one\s+hundred/i.test(flat)) {
+        denomination = 100;
+        confidence.denomination = 'low';
+        warnings.push('Duty amount read from words rather than figures.');
+      }
     }
     if (denomination !== undefined && denomination !== 100) {
-      warnings.push(`Read a denomination of ₹${denomination}, not ₹100 — confirm before saving.`);
+      warnings.push(`Read a duty of ₹${denomination}, not ₹100 — confirm before saving.`);
       confidence.denomination = 'low';
     }
+
+    const considerationMatch = flat.match(
+      /consideration\s*price\s*\(?\s*(?:rs\.?)?\s*\)?\s*[:\-]?\s*([0-9][0-9,]{0,10})/i,
+    );
+    const considerationPrice = considerationMatch
+      ? Number(considerationMatch[1].replace(/,/g, ''))
+      : undefined;
+
+    // Descriptive fields, useful for cross-checking against the agreement.
+    const documentDescription = lineValue(/description\s*of\s*document/);
+    const propertyDescription = lineValue(/property\s*description/);
+    const firstParty = lineValue(/first\s*party/);
+    const secondParty = lineValue(/second\s*party/);
+    const issuer = /shcil|stock\s*holding/i.test(flat)
+      ? 'SHCIL'
+      : /e-?stamp/i.test(flat)
+        ? 'E-STAMP'
+        : undefined;
 
     // Issue or purchase date, in the formats these papers actually use.
     let issueDate: string | undefined;
@@ -179,10 +284,28 @@ export class StampOcrService {
     if (text.trim().length < 40) {
       warnings.push('Very little text was readable — the scan may be low resolution or skewed.');
     }
-    if (!stampNumber) {
-      warnings.push('No stamp number could be read. Enter it from the physical paper.');
+    if (identifiers.length === 0) {
+      warnings.push('No identifier could be read. Enter the certificate number from the physical paper.');
     }
 
-    return { rawText: text, stampNumber, denomination, stateCode, issueDate, vendor, confidence, warnings };
+    return {
+      rawText: text,
+      identifiers,
+      stampNumber,
+      denomination,
+      stateCode,
+      issueDate,
+      vendor,
+      issuer,
+      accountReference,
+      ddoCode,
+      documentDescription,
+      propertyDescription,
+      considerationPrice,
+      firstParty,
+      secondParty,
+      confidence,
+      warnings,
+    };
   }
 }
