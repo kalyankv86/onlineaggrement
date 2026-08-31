@@ -22,6 +22,10 @@ export function StampScanForm() {
   const proposal: StampReading | undefined = readState.reading;
   const lowConfidence = (field: string) => proposal?.confidence?.[field] === 'low';
 
+  /** What OCR read for a given identifier kind, if anything. */
+  const identifier = (kind: string) =>
+    proposal?.identifiers?.find((i) => i.kind === kind)?.value ?? '';
+
   return (
     <div className="card">
       <h2>Register a stamp paper</h2>
@@ -67,9 +71,10 @@ export function StampScanForm() {
           <input type="hidden" name="scanBase64" value={readState.scanBase64 ?? ''} />
           <input type="hidden" name="scanContentType" value={readState.scanContentType ?? ''} />
 
-          <Notice tone="warn" title="Check these before saving">
-            These values were read from the scan by OCR. Compare them against the physical stamp
-            paper — the stamp number is what prevents the same stamp being used twice.
+          <Notice tone="warn" title="Check these against the physical paper before saving">
+            These values were read by OCR. Every identifier below is stored and each one
+            independently blocks the same stamp being registered twice — so it is worth entering
+            all of those the paper carries, and worth getting each one exactly right.
           </Notice>
 
           {proposal.warnings?.length > 0 && (
@@ -80,14 +85,35 @@ export function StampScanForm() {
             </ul>
           )}
 
-          <Field
-            label={`Stamp / certificate number${lowConfidence('stampNumber') ? '  — uncertain' : ''}`}
-            name="stampNumber"
-            defaultValue={proposal.stampNumber ?? ''}
-            required
-            style={lowConfidence('stampNumber') ? { borderColor: 'var(--waiting)' } : undefined}
-            hint="Must match the physical paper exactly. Watch for O/0 and I/1."
-          />
+          <fieldset style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '14px 16px', margin: '0 0 18px' }}>
+            <legend className="faint" style={{ padding: '0 6px' }}>
+              Identifiers — each one is checked for duplicates
+            </legend>
+
+            <Field
+              label={`Certificate number${lowConfidence('stampNumber') ? '  — uncertain' : ''}`}
+              name="certificateNo"
+              defaultValue={identifier('CERTIFICATE_NO') || proposal.stampNumber || ''}
+              style={lowConfidence('stampNumber') ? { borderColor: 'var(--waiting)' } : undefined}
+              hint="e.g. IN-AP77702625151064Y. Watch for O/0 and I/1."
+            />
+            <Field
+              label="Unique document reference"
+              name="uniqueDocRef"
+              defaultValue={identifier('UNIQUE_DOC_REF')}
+              hint="e.g. SUBIN-… — this is what the issuer's portal verifies against."
+            />
+            <Field
+              label="Pre-printed paper serial"
+              name="paperSerial"
+              defaultValue={identifier('PAPER_SERIAL')}
+              hint="Usually bottom-right, e.g. FH 0001752181."
+            />
+            <p className="faint" style={{ margin: '4px 0 0' }}>
+              Punctuation, spacing and case are ignored when checking for duplicates, so
+              IN-AP777… and inap777… count as the same stamp.
+            </p>
+          </fieldset>
 
           <div className="grid grid-2">
             <Field
@@ -109,6 +135,49 @@ export function StampScanForm() {
             <Field label="Issue date" name="issueDate" type="date" defaultValue={proposal.issueDate ?? ''} />
             <Field label="Vendor" name="vendor" defaultValue={proposal.vendor ?? ''} />
           </div>
+
+          <details style={{ margin: '4px 0 18px' }}>
+            <summary className="faint" style={{ cursor: 'pointer' }}>
+              Other details printed on the stamp
+            </summary>
+            <div style={{ marginTop: 12 }}>
+              <div className="grid grid-2">
+                <Field label="Issuer" name="issuer" defaultValue={proposal.issuer ?? ''} />
+                <Field
+                  label="Consideration price (Rs.)"
+                  name="considerationPrice"
+                  type="number"
+                  defaultValue={proposal.considerationPrice ?? ''}
+                  hint="Not the duty — this is often zero."
+                />
+              </div>
+              <div className="grid grid-2">
+                <Field
+                  label="Description of document"
+                  name="documentDescription"
+                  defaultValue={proposal.documentDescription ?? ''}
+                />
+                <Field
+                  label="Property description"
+                  name="propertyDescription"
+                  defaultValue={proposal.propertyDescription ?? ''}
+                />
+              </div>
+              <div className="grid grid-2">
+                <Field label="First party" name="firstParty" defaultValue={proposal.firstParty ?? ''} />
+                <Field label="Second party" name="secondParty" defaultValue={proposal.secondParty ?? ''} />
+              </div>
+              <div className="grid grid-2">
+                <Field
+                  label="Account reference"
+                  name="accountReference"
+                  defaultValue={proposal.accountReference ?? ''}
+                  hint="Identifies the vendor account, not this stamp — not used for duplicate checks."
+                />
+                <Field label="DDO code" name="ddoCode" defaultValue={proposal.ddoCode ?? ''} />
+              </div>
+            </div>
+          </details>
 
           <div className="row">
             <button type="submit" disabled={saving}>

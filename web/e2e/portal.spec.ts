@@ -73,9 +73,13 @@ async function agreementAwaitingMd(page: Page): Promise<string> {
     buffer: AGREEMENT_PDF,
   });
   await page.getByRole('button', { name: 'Read the scan' }).click();
-  await expect(page.getByText('Check these before saving')).toBeVisible({ timeout: 60_000 });
-  await page.getByLabel(/Stamp \/ certificate number/).fill(`UI-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
-  await page.getByLabel('Issuing state').fill('IN-OR');
+  await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
+    timeout: 60_000,
+  });
+  await page
+    .getByLabel(/Certificate number/)
+    .fill(`IN-AP${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
+  await page.getByLabel('Issuing state').fill('IN-AP');
   await page.getByRole('button', { name: 'Confirm and register' }).click();
   await expect(page.getByText('Registered.')).toBeVisible({ timeout: 20_000 });
   await signOut(page);
@@ -147,16 +151,47 @@ test.describe('GTIDS Agreement Portal', () => {
     await page.getByRole('button', { name: 'Read the scan' }).click();
 
     // OCR proposes; nothing is saved until a person confirms.
-    await expect(page.getByText('Check these before saving')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
+      timeout: 60_000,
+    });
 
-    const stampNumber = `UI-${Date.now()}`;
-    await page.getByLabel(/Stamp \/ certificate number/).fill(stampNumber);
-    await page.getByLabel('Issuing state').fill('IN-OR');
-    await page.getByLabel('Vendor').fill('Treasury, Bhubaneswar');
+    // DEC-029 — all three identifiers the paper carries, as on a real AP e-Stamp.
+    const suffix = Date.now();
+    const certificateNo = `IN-AP${suffix}Y`;
+    const uniqueDocRef = `SUBIN-AP${suffix}Z`;
+    const paperSerial = `FH ${suffix}`;
+
+    await page.getByLabel(/Certificate number/).fill(certificateNo);
+    await page.getByLabel('Unique document reference').fill(uniqueDocRef);
+    await page.getByLabel('Pre-printed paper serial').fill(paperSerial);
+    await page.getByLabel('Issuing state').fill('IN-AP');
+    await page.getByLabel('Vendor').fill('Treasury, Visakhapatnam');
     await page.getByRole('button', { name: 'Confirm and register' }).click();
 
     await expect(page.getByText('Registered.')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole('cell', { name: stampNumber })).toBeVisible();
+    await expect(page.getByRole('cell', { name: certificateNo })).toBeVisible();
+
+    // The same physical stamp, offered under a DIFFERENT one of its numbers and
+    // written differently, must still be refused (BR-006).
+    await page.getByLabel('Scan of the stamp paper').setInputFiles({
+      name: 'stamp.pdf',
+      mimeType: 'application/pdf',
+      buffer: AGREEMENT_PDF,
+    });
+    await page.getByRole('button', { name: 'Read the scan' }).click();
+    await expect(page.getByText(/Check these against the physical paper/)).toBeVisible({
+      timeout: 60_000,
+    });
+
+    await page.getByLabel(/Certificate number/).fill(`in-ap ${suffix} y`.toLowerCase());
+    await page.getByLabel('Unique document reference').fill('');
+    await page.getByLabel('Pre-printed paper serial').fill('');
+    await page.getByLabel('Issuing state').fill('IN-AP');
+    await page.getByRole('button', { name: 'Confirm and register' }).click();
+
+    await expect(page.locator('.notice-error')).toContainText(/already registered/i, {
+      timeout: 20_000,
+    });
   });
 
   test('an agent creates an agreement, attaches a stamp and generates it', async ({ page }) => {

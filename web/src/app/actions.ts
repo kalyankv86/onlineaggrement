@@ -13,13 +13,25 @@ import { setToken, clearToken } from '@/lib/session';
  * on the user's behalf. The trade is one round trip through the Next server.
  */
 
+export type StampIdentifierKind = 'CERTIFICATE_NO' | 'UNIQUE_DOC_REF' | 'PAPER_SERIAL' | 'OTHER';
+
 export interface StampReading {
   rawText: string;
+  /** Every identifier printed on the paper; each independently blocks a duplicate. */
+  identifiers: { kind: StampIdentifierKind; value: string }[];
   stampNumber?: string;
   denomination?: number;
   stateCode?: string;
   issueDate?: string;
   vendor?: string;
+  issuer?: string;
+  accountReference?: string;
+  ddoCode?: string;
+  documentDescription?: string;
+  propertyDescription?: string;
+  considerationPrice?: number;
+  firstParty?: string;
+  secondParty?: string;
   confidence: Record<string, 'high' | 'low'>;
   warnings: string[];
 }
@@ -293,13 +305,49 @@ export async function registerStamp(_prev: ActionResult, form: FormData): Promis
   const scanBase64 = String(form.get('scanBase64') ?? '');
   if (!scanBase64) return { error: 'Read the scan first, then confirm the details' };
 
+  const text = (name: string): string | undefined =>
+    String(form.get(name) ?? '').trim() || undefined;
+
+  /*
+   * DEC-029 — send every identifier the operator confirmed. Each is independently
+   * unique, so recording all of them means getting any single one right is enough
+   * to catch a stamp that has already been registered.
+   */
+  const identifiers = (
+    [
+      ['CERTIFICATE_NO', text('certificateNo')],
+      ['UNIQUE_DOC_REF', text('uniqueDocRef')],
+      ['PAPER_SERIAL', text('paperSerial')],
+    ] as const
+  )
+    .filter(([, value]) => value && value.replace(/[^A-Za-z0-9]/g, '').length >= 6)
+    .map(([kind, value]) => ({ kind, value: value as string }));
+
+  if (identifiers.length === 0) {
+    return {
+      error:
+        'Enter at least one identifier of six characters or more — the certificate number, the unique document reference, or the paper serial.',
+    };
+  }
+
   try {
     await post('/api/v1/stamps', {
-      stampNumber: String(form.get('stampNumber') ?? '').trim() || undefined,
+      stampNumber: text('certificateNo') ?? identifiers[0].value,
+      identifiers,
       denomination: Number(form.get('denomination') ?? 100),
       stateCode: form.get('stateCode'),
-      issueDate: String(form.get('issueDate') ?? '') || undefined,
-      vendor: String(form.get('vendor') ?? '').trim() || undefined,
+      issueDate: text('issueDate'),
+      vendor: text('vendor'),
+      issuer: text('issuer'),
+      accountReference: text('accountReference'),
+      ddoCode: text('ddoCode'),
+      documentDescription: text('documentDescription'),
+      propertyDescription: text('propertyDescription'),
+      considerationPrice: form.get('considerationPrice')
+        ? Number(form.get('considerationPrice'))
+        : undefined,
+      firstParty: text('firstParty'),
+      secondParty: text('secondParty'),
       scanBase64,
       scanContentType: String(form.get('scanContentType') ?? 'application/pdf'),
     });
