@@ -90,6 +90,10 @@ journalctl -u gtids-web -n 15 --no-pager 2>/dev/null | tail -15
 
 sec "Recent errors — worker"
 journalctl -u gtids-worker -n 10 --no-pager 2>/dev/null | tail -10
+# The units send application output to a file, not journald, so the journal alone
+# shows only systemd's own lines and none of the worker's.
+[[ -f /var/log/gtids/worker.log ]] && { echo "  --- worker.log ---"; tail -15 /var/log/gtids/worker.log; }
+kv "scheduled jobs" "$(grep -o '[0-9]* scheduled job(s) registered' /var/log/gtids/worker.log 2>/dev/null | tail -1 || echo 'not reported — worker may not have started')"
 
 sec "nginx"
 nginx -t 2>&1 | sed 's/^/  /'
