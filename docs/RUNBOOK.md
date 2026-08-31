@@ -110,6 +110,72 @@ the finalisation transaction, and a manual one would not be tied to it.
 
 ---
 
+## Logs — where they are and what is in them
+
+| Source | Path | Contains |
+|---|---|---|
+| API | `/var/log/gtids/api.log` | requests, state transitions, signature results, errors with a correlation id |
+| Worker | `/var/log/gtids/worker.log` | job summaries: notifications sent, transactions reconciled, chains verified |
+| Web UI | `/var/log/gtids/web.log` | Next.js server output; render and server-action errors |
+| nginx | `/var/log/nginx/gtids-access.log`, `gtids-error.log` | requests reaching the server; upstream connection failures |
+| PostgreSQL | `/var/log/postgresql/` | slow queries, constraint violations, connection failures |
+
+**`journalctl` will not show you application output.** The units write it to the
+files above, so `journalctl -u gtids-api` carries only systemd's own lines —
+starts, stops, restarts, failures. Both are useful; they answer different
+questions. Use the journal to find out *whether a service restarted and why*, and
+the log files to find out *what it did*.
+
+```bash
+tail -f /var/log/gtids/api.log                      # follow live
+journalctl -u gtids-api -f                          # follow restarts/failures
+grep -i error /var/log/gtids/api.log | tail -30
+```
+
+### Finding a specific thing
+
+```bash
+# Everything about one agreement
+grep 'GTIDS/2026-27/SVCAGR/000042' /var/log/gtids/api.log
+
+# A 500 the user reported: they were given a correlation id
+grep '\[9oqq28xh\]' /var/log/gtids/api.log
+
+# Did the worker actually start its jobs?
+grep 'scheduled job' /var/log/gtids/worker.log | tail -1
+
+# Signature integrity alerts — always worth investigating
+grep -i 'SIGNATURE INTEGRITY' /var/log/gtids/*.log
+
+# Requests that reached nginx but failed upstream
+grep -v ' 200 ' /var/log/nginx/gtids-access.log | tail -20
+```
+
+### What is deliberately *not* in the logs
+
+The legally significant record is the **audit trail in the database**, not these
+files. Logs are rotated daily and kept 30 days; the audit trail is hash-chained,
+append-only and retained for the DEC-013 period. Never reason about who signed
+what from a log file:
+
+```bash
+curl -s localhost:3100/api/v1/reports/audit-integrity   # chain health
+# per-agreement trail: GET /api/v1/agreements/:id/audit
+```
+
+Aadhaar numbers and OTP values appear in no log by design (SRS §12, AC-21).
+
+### Rotation
+
+Daily, 30 kept, compressed, via `/etc/logrotate.d/gtids`. To check it is working:
+
+```bash
+logrotate -d /etc/logrotate.d/gtids     # dry run, shows what it would do
+ls -la /var/log/gtids/
+```
+
+---
+
 ## Things not to do
 
 - **Never `UPDATE` or `DELETE` `audit_logs`.** Three layers will stop you, and the third
