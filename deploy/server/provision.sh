@@ -32,6 +32,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
   curl ca-certificates gnupg git ufw nginx \
+  certbot python3-certbot-nginx \
   postgresql postgresql-contrib redis-server \
   nfs-common cifs-utils \
   poppler-utils \

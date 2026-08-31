@@ -117,13 +117,36 @@ units from `SITE` and `/etc/gtids/api.env`, so nothing is hardcoded.
 
 ### 6 — TLS
 
+`install-units.sh` leaves a self-signed placeholder so nginx can start. Replace it.
+
+**If the host is reachable from the internet on port 80** — the site config already
+serves `/.well-known/acme-challenge/` from `/var/www/html`, so use the webroot
+method rather than `--nginx`, which rewrites the site file:
+
 ```bash
-sudo certbot certonly --nginx -d "$SITE"
-sudo nginx -t && sudo systemctl reload nginx
+sudo mkdir -p /var/www/html
+sudo certbot certonly --webroot -w /var/www/html -d "$SITE" \
+  --deploy-hook "systemctl reload nginx"
+
+# re-run so nginx points at the real certificate instead of the placeholder
+sudo -E ./deploy/server/install-units.sh
 ```
 
-Or install your own CA-issued certificate at
-`/etc/letsencrypt/live/$SITE/{fullchain,privkey}.pem`.
+**If it is only reachable internally**, HTTP-01 cannot work — the challenge comes
+from the public internet. Two options:
+
+```bash
+# DNS-01: proves control of the domain with a TXT record, no inbound access
+sudo certbot certonly --manual --preferred-challenges dns -d "$SITE"
+```
+
+or install your own CA-issued certificate at
+`/etc/ssl/gtids/$SITE.{crt,key}`, which is where the site already points when no
+Let's Encrypt certificate exists.
+
+Renewal is handled by certbot's own systemd timer. Check it with
+`systemctl list-timers | grep certbot` and rehearse it with
+`certbot renew --dry-run`.
 
 ### 7 — Preflight
 
