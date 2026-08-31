@@ -158,10 +158,26 @@ files. Logs are rotated daily and kept 30 days; the audit trail is hash-chained,
 append-only and retained for the DEC-013 period. Never reason about who signed
 what from a log file:
 
+The reporting and audit endpoints require an authenticated auditor. Obtain a
+token first — they are not open, which is the point:
+
 ```bash
-curl -s localhost:3100/api/v1/reports/audit-integrity   # chain health
-# per-agreement trail: GET /api/v1/agreements/:id/audit
+TOKEN=$(curl -s -X POST localhost:3100/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"auditor@gtids.example","password":"<password>"}' \
+  | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+
+# Chain health across the whole register
+curl -s -H "Authorization: Bearer $TOKEN" \
+  localhost:3100/api/v1/reports/audit-integrity
+
+# The trail for one agreement
+curl -s -H "Authorization: Bearer $TOKEN" \
+  localhost:3100/api/v1/agreements/<id>/audit
 ```
+
+A token lasts 30 minutes. If the call returns `401 Bearer token required`, it has
+expired — request another.
 
 Aadhaar numbers and OTP values appear in no log by design (SRS §12, AC-21).
 
