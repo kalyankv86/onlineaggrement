@@ -91,12 +91,13 @@ if [[ ! -f "/etc/letsencrypt/live/$SITE/fullchain.pem" ]]; then
     -e "s#ssl_certificate_key /etc/letsencrypt/live/$SITE/privkey.pem;#ssl_certificate_key /etc/ssl/gtids/$SITE.key;#" \
     -e "s#ssl_stapling on;#ssl_stapling off;#" \
     -e "s#ssl_stapling_verify on;#ssl_stapling_verify off;#" \
+    -e 's#^\( *\)add_header Strict-Transport-Security#\1# HSTS withheld while the certificate is self-signed (see below)\n\1# add_header Strict-Transport-Security#' \
     "/etc/nginx/sites-available/$SITE"
 
   printf '\033[33m!!!\033[0m %s\n' "Using a SELF-SIGNED certificate. Browsers will warn."
-  printf '\033[33m!!!\033[0m %s\n' "Replace it before go-live:"
-  printf '\033[33m!!!\033[0m %s\n' "  certbot --nginx -d $SITE"
-  printf '\033[33m!!!\033[0m %s\n' "or install your CA-issued certificate and point the site at it."
+  printf '\033[33m!!!\033[0m %s\n' "HSTS is withheld while the certificate is self-signed: with HSTS set,"
+  printf '\033[33m!!!\033[0m %s\n' "browsers refuse to let anyone click through a certificate warning at all."
+  printf '\033[33m!!!\033[0m %s\n' "Obtain a real certificate, then re-run this script to enable both."
 fi
 
 log "Installing log rotation"
