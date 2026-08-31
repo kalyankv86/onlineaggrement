@@ -125,6 +125,14 @@ async function main(): Promise<void> {
   });
   ok(`stamp registered, scan hashed ${stamp.documentHash.slice(0, 16)}…`);
 
+  // Baseline for the notification check in step 9, taken before this agreement
+  // contributes anything to the register-wide totals.
+  const recipientsBefore: number = (
+    await call('GET', '/api/v1/reports/notifications', { token: tokens.auditor })
+  )
+    .filter((n: { event_type: string }) => n.event_type === 'COMPLETED')
+    .reduce((sum: number, n: { count: string }) => sum + Number(n.count), 0);
+
   step('3. Agent creates the agreement (FR-002)');
   const types = await call('GET', '/api/v1/templates/types', { token: tokens.agent });
   const type = types.find((t: { code: string }) => t.code === 'SVCAGR') ?? types[0];
@@ -223,11 +231,21 @@ async function main(): Promise<void> {
   }
 
   step('9. Notifications to the agent, the MD and accounts (FR-018, DEC-028)');
-  const notifications = await call('GET', '/api/v1/reports/notifications', { token: tokens.auditor });
-  const completed = notifications.filter((n: { event_type: string }) => n.event_type === 'COMPLETED');
-  const total = completed.reduce((sum: number, n: { count: string }) => sum + Number(n.count), 0);
-  check(total >= 3, `${total} completion notification recipients recorded (agent, MD, accounts)`);
-  info(completed.map((n: any) => `${n.status}: ${n.count}`).join(', ') || 'none yet — the worker dispatches within 30s');
+  /*
+   * The report is register-wide. Comparing against a baseline taken before this
+   * run isolates this agreement's recipients — reporting the running total as if
+   * it belonged to this execution overstated it by every previous demo.
+   */
+  const completionRecipients = async (): Promise<number> =>
+    (await call('GET', '/api/v1/reports/notifications', { token: tokens.auditor }))
+      .filter((n: { event_type: string }) => n.event_type === 'COMPLETED')
+      .reduce((sum: number, n: { count: string }) => sum + Number(n.count), 0);
+
+  const addedRecipients = (await completionRecipients()) - recipientsBefore;
+  check(
+    addedRecipients === 3,
+    `this agreement queued ${addedRecipients} completion recipients — the agent, the MD and accounts`,
+  );
 
   step('10. Audit trail and chain integrity (FR-017, FR-025)');
   const audit = await call('GET', `/api/v1/agreements/${id}/audit`, { token: tokens.auditor });

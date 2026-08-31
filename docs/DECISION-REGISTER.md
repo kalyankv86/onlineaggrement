@@ -101,7 +101,9 @@ before Phase 1b*, and expensive after.
 ---
 
 ### DEC-004 — Is Employee approval a signature or an attested click?
-**Severity:** BLOCKER · **Status:** PROPOSED · **Owner:** GTIDS Legal + Management
+**Severity:** BLOCKER · **Status:** ⚠️ **SUPERSEDED by DEC-024** — the Employee approval step
+was removed entirely on 12 Aug 2026. Retained as the record of what was decided and built
+before that change. · **Owner:** GTIDS Legal + Management
 **Affects:** FR-012, BR-002, BR-003; SDD §4 step 8, §11
 **Blocks:** Document Module, workflow module
 

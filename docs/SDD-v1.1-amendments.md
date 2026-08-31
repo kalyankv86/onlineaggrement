@@ -118,7 +118,7 @@ signature-invalidation failure mode described in DEC-001.
 |---|---|
 | `GET /api/v1/verify/:agreementNumber` | **Replaced by** `GET /api/v1/verify/:token` — random token, rate-limited, constant-time. *(DEC-006)* |
 | `POST /api/v1/esign/callback` | Now requires provider signature header, timestamp window and `provider_event_id`; idempotent. *(DEC-010)* |
-| `POST /api/v1/agreements/:id/employee-approve` | Body now requires `documentHash` for stale-view protection. *(FR-027)* |
+| ~~`POST /api/v1/agreements/:id/employee-approve`~~ | Removed by DEC-024. Stale-view protection (FR-027) now applies to `sign/agent` and `sign/md`. |
 
 **Added**
 

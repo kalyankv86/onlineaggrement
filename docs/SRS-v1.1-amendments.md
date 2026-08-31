@@ -81,6 +81,9 @@ criterion depends on DigiLocker. *(DEC-017)*
 ---
 
 ## A4 — Replaces FR-012
+> ⚠️ **Superseded by DEC-024 (12 Aug 2026).** The Employee approval step was removed;
+> the sequence is Agent signs → MD signs. This section is retained as the record of
+> what was specified and built beforehand.
 
 **FR-012 (revised) — Employee Approval.**
 Employee approval is an **authenticated attested action, not an eSign signature**. The system
@@ -266,8 +269,8 @@ v1.0 listed 9 criteria. They are retained and renumbered AC-01…AC-09, with AC-
 | ID | Criterion |
 |---|---|
 | AC-01 | A valid Agent can create an agreement and generate the correct PDF. |
-| AC-02 | Agent signature must be completed before Employee approval is enabled. |
-| AC-03 | Employee approval must be completed before MD signing is enabled. |
+| AC-02 | ~~Agent signature must be completed before Employee approval is enabled.~~ Withdrawn by DEC-024. |
+| AC-03 | MD signing must not be possible until the Agent signature is complete. *(Amended by DEC-024.)* |
 | AC-04 | MD cannot sign a rejected, expired or cancelled agreement. |
 | AC-05 | After MD signature the agreement becomes COMPLETED and content editing is disabled. |
 | AC-06 | The final signed document is retrievable from the authorized portal. |

@@ -24,8 +24,8 @@ export interface ActionContext {
 }
 
 /**
- * Orchestrates the mandated sequence: Agent signs -> Employee approves -> MD signs
- * -> COMPLETED (SRS §3).
+ * Orchestrates the mandated sequence: Agent signs -> MD signs -> COMPLETED
+ * (SRS §3 as amended by DEC-024; the Employee approval step was removed).
  *
  * Sequencing itself is not enforced here — it is structural in the transition
  * table (state-machine.ts). What this service owns is the coupling between a state

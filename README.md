@@ -3,7 +3,7 @@
 Digitises the agreement lifecycle from initiation and stamping through sequential signing,
 approval, finalisation, notification and verification.
 
-**Workflow:** Agent signs → Employee approves → MD signs → email to all three.
+**Workflow:** Agent signs → MD signs → email to the agent, the MD and accounts (DEC-024).
 **Key design decision:** GTIDS is the system of record. The Aadhaar eSign provider is an
 external identity/signature dependency only, isolated behind an adapter.
 
@@ -13,24 +13,24 @@ external identity/signature dependency only, isolated behind an adapter.
 
 | Area | State |
 |---|---|
-| SRS / SDD review | Complete — 23 gaps and decisions raised ([register](docs/DECISION-REGISTER.md)) |
+| SRS / SDD review | Complete — 30 gaps and decisions raised ([register](docs/DECISION-REGISTER.md)) |
 | SRS v1.1 / SDD v1.1 amendments | Drafted, awaiting GTIDS approval |
 | **Phase 2 gate (DEC-001, AC-10)** | ✅ **PASSED** — see [spike](spike/pdf-signing/README.md) |
-| API | Built, boots, **126 tests passing** |
-| Web UI | Built — **13 browser tests passing** against the running stack |
+| API | Built, boots, **133 tests passing** |
+| Web UI | Built — **11 browser tests passing** against the running stack |
 | Local deployment | ✅ Running: API + worker + web, one command, no Docker |
 | Server deployment | Artifacts complete — see [SELF-HOSTING.md](docs/SELF-HOSTING.md) |
-| Storage | GTIDS NAS export, mounted. No object store, no cloud |
+| Storage | GTIDS NAS export. No object store, no cloud. **POC runs on local staging storage until the mount window** |
 | PDF renderer | Playwright/Chromium, verified through the full signing pipeline |
 | eSign provider | Mock only — DEC-002 is the outstanding blocker |
 
 Three of four Phase 0 blockers are resolved in code under stated assumptions.
 **DEC-002 (which ESP/ASP GTIDS contracts) is still open and gates production.**
 
-A complete agreement has been executed end to end through the deployed stack —
-created, stamped, generated, signed by the Agent, approved by the Employee, signed by the MD,
-notified, audited and publicly verified — with both signatures independently confirmed valid by
-poppler's `pdfsig`.
+A complete agreement has been executed end to end through the deployed stack — created,
+stamped, composed from an uploaded document, signed by the Agent, signed by the MD, notified,
+audited and publicly verified — with both signatures independently confirmed valid by poppler's
+`pdfsig`.
 
 ---
 
@@ -88,14 +88,14 @@ stops a PDF render from starving a request that is serving a signer mid-ceremony
 npm --prefix api run demo
 ```
 
-Drives Agent → Employee → MD over HTTP as the four principals, asserts every acceptance
-criterion along the way, and writes the executed PDF to `api/demo-output/`.
+Drives Agent → MD over HTTP as each principal, asserts every acceptance criterion
+along the way, and writes the executed PDF to `api/demo-output/`.
 
 ### Tests
 
 ```bash
-npm --prefix api test          # 126 — unit, integration against real Postgres, API E2E
-npm --prefix web run test:e2e  # 13 — real browser, clicking through the portal
+npm --prefix api test          # 133 — unit, integration against real Postgres, API E2E
+npm --prefix web run test:e2e  # 11 — real browser, clicking through the portal
 cd spike/pdf-signing && node run.js   # the Phase 2 signature gate
 ```
 
@@ -108,10 +108,10 @@ self-contained.
 
 ### 1. Signing is append-only, and that is not optional
 
-SRS §8 forbids invalidating an earlier signature, while the workflow applies three actions to
-one document. Those two requirements are only compatible one way: the document is rendered
-**once**, three signature widgets are reserved before any signature exists, and every
-subsequent action is a **PDF incremental update**.
+SRS §8 forbids invalidating an earlier signature, while the workflow applies two signatures to
+one document. Those two requirements are only compatible one way: the document is composed
+**once**, both signature widgets are reserved before any signature exists, and every subsequent
+action is a **PDF incremental update**.
 
 The consequence is load-bearing: after `prepared-unsigned.pdf` exists, nothing may rewrite the
 bytes. Chromium and `pdf-lib.save()` both rewrite the whole file and would destroy every prior
@@ -122,10 +122,10 @@ signatures valid on the final document, and a tamper control confirming detectio
 
 ### 2. Sequencing is structural, not a guard
 
-`BR-002` (no approval before the agent signs) and `BR-003` (no MD signature before approval)
-are not checks that could be forgotten. There is simply **no edge** in the transition table
-from any earlier state, so the ordering cannot be violated even by a caller that reaches the
-service directly. A unit test asserts the absence of those edges.
+`BR-003` (no MD signature before the agent has signed) is not a check that could be forgotten.
+`PENDING_MD_SIGNATURE` has exactly one inbound edge, from `AGENT_SIGNED`, so the ordering cannot
+be violated even by a caller reaching the service directly. Unit tests assert both that edge and
+the absence of any route into the withdrawn Employee states (DEC-024).
 
 ### 3. Documents live on the NAS, and an unmounted share is the thing to fear
 
