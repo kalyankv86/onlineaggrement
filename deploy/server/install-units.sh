@@ -37,6 +37,21 @@ done
 
 log "Installing nginx configuration for $SITE"
 install -m 0644 "$HERE/nginx/gtids-proxy-params.conf" /etc/nginx/gtids-proxy-params.conf
+# http-level directives (rate-limit zones, upstreams), declared once per server.
+install -d -m 0755 /etc/nginx/conf.d
+install -m 0644 "$HERE/nginx/gtids-http.conf" /etc/nginx/conf.d/gtids-http.conf
+rm -f /etc/nginx/conf.d/gtids-limits.conf   # superseded name
+
+# Remove any GTIDS site installed under a previous hostname. Left in place it
+# duplicates this server block, and nginx rejects the whole configuration.
+for enabled in /etc/nginx/sites-enabled/*; do
+  [[ -e "$enabled" ]] || continue
+  name="$(basename "$enabled")"
+  if [[ "$name" != "$SITE" ]] && grep -q 'GTIDS Agreement Portal' "$enabled" 2>/dev/null; then
+    log "Removing superseded GTIDS site: $name"
+    rm -f "$enabled" "/etc/nginx/sites-available/$name"
+  fi
+done
 # server_name and the certificate paths must match the real hostname, or nginx
 # serves the default site and TLS never loads.
 sed "s#agreements\.gtids\.example#${SITE}#g" \
