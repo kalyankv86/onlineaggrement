@@ -268,3 +268,19 @@ textarea { min-height: 84px; resize: vertical; }
 
 .empty { text-align: center; padding: 44px 20px; color: var(--fg-muted); }
 .empty p { margin: 0 0 14px; }
+
+/* Checkbox list for role selection — a stacked row per option, so the label is
+   clickable and the hit area is the whole line rather than the box alone. */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  cursor: pointer;
+}
+.checkbox-row input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+}

@@ -448,3 +448,57 @@ export async function composeFromBank(_prev: ActionResult, form: FormData): Prom
     return toResult(e);
   }
 }
+
+// ── User administration ──────────────────────────────────────────────────────
+
+export async function upsertUser(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const email = String(form.get('email') ?? '').trim();
+  const fullName = String(form.get('fullName') ?? '').trim();
+  const roles = form.getAll('roles').map(String).filter(Boolean);
+  const bankId = String(form.get('bankId') ?? '').trim() || undefined;
+  const password = String(form.get('password') ?? '').trim() || undefined;
+
+  if (!email || !fullName) return { error: 'Email and full name are both required' };
+  if (roles.length === 0) return { error: 'Choose at least one role' };
+
+  try {
+    const res = await post<{ generatedPassword?: string }>('/api/v1/users', {
+      email,
+      fullName,
+      roles,
+      bankId,
+      password,
+    });
+    revalidatePath('/users');
+    // Carried back so it can be shown once; it is not stored anywhere readable.
+    return { ok: true, token: res.generatedPassword };
+  } catch (e) {
+    return toResult(e);
+  }
+}
+
+export async function setUserActive(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const userId = String(form.get('userId') ?? '');
+  const isActive = String(form.get('isActive')) === 'true';
+  try {
+    await post(`/api/v1/users/${userId}/active`, { isActive });
+  } catch (e) {
+    return toResult(e);
+  }
+  revalidatePath('/users');
+  return { ok: true };
+}
+
+export async function resetUserPassword(
+  _prev: ActionResult,
+  form: FormData,
+): Promise<ActionResult> {
+  const userId = String(form.get('userId') ?? '');
+  try {
+    const res = await post<{ password: string }>(`/api/v1/users/${userId}/reset-password`);
+    revalidatePath('/users');
+    return { ok: true, token: res.password };
+  } catch (e) {
+    return toResult(e);
+  }
+}

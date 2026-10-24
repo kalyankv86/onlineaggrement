@@ -86,14 +86,14 @@ export function BankAdmin({ banks, signers }: { banks: BankRow[]; signers: Signe
                     <td>{bank.agent_count}</td>
                     <td>
                       {signerName(bank.employee_signer_user_id) ?? (
-                        <span className="pill pill-waiting">not set</span>
+                        <span className="badge badge-waiting">not set</span>
                       )}
                     </td>
                     <td>
                       {bank.has_active_document ? (
-                        <span className="pill pill-ok">active</span>
+                        <span className="badge badge-success">active</span>
                       ) : (
-                        <span className="pill pill-waiting">none</span>
+                        <span className="badge badge-waiting">none</span>
                       )}
                     </td>
                     <td>

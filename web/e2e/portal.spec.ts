@@ -15,6 +15,7 @@ const PASSWORD = process.env.DEMO_PASSWORD ?? 'ChangeMe-Dev-2026!';
 const API = process.env.API_ORIGIN ?? 'http://localhost:3100';
 
 const USERS = {
+  admin: 'admin@gtids.example',
   ops: 'ops@gtids.example',
   agent: 'agent@gtids.example',
   employee: 'employee@gtids.example',
@@ -425,6 +426,45 @@ test.describe('GTIDS Agreement Portal', () => {
     // This bank is now complete. Others from earlier runs may still be listed as
     // unfinished, so the assertion is on this row rather than on the banner.
     await expect(row.getByText('active')).toBeVisible();
+  });
+
+  test('an administrator creates an agent and is shown the password once', async ({ page }) => {
+    // A bank first: the form will not let an agent be created without one.
+    await signIn(page, USERS.admin);
+    await page.goto('/banks');
+    const bankName = `Agent Test Bank ${Date.now().toString().slice(-6)}`;
+    await page.getByLabel('Short code').fill(`A${Date.now().toString().slice(-6)}`);
+    await page.getByLabel('Full name').fill(bankName);
+    await page.getByRole('button', { name: 'Add bank' }).click();
+    await expect(page.locator('tr', { hasText: bankName })).toBeVisible({ timeout: 20_000 });
+
+    await page.goto('/users');
+    const email = `agent-${Date.now()}@uitest.local`;
+    await page.getByLabel('Email').fill(email);
+    await page.getByLabel('Full name').fill('UI Test Agent');
+    await page.getByLabel('What is this person?').selectOption('AGENT');
+
+    /*
+     * Choosing Agent reveals the bank selector and removes the GTIDS role
+     * checkboxes, because an agent is the counterparty and holds no GTIDS role.
+     * Asserted on the inputs rather than the labels — the same role names appear
+     * in the accounts table above, against existing users.
+     */
+    await expect(page.getByLabel('Which bank?')).toBeVisible();
+    await expect(page.locator('input[name="roles"][type="checkbox"]')).toHaveCount(0);
+
+    await page.getByLabel('Which bank?').selectOption({ label: bankName });
+    await page.getByRole('button', { name: 'Save account' }).click();
+
+    // Shown once, and only once — there is no way to retrieve it afterwards.
+    await expect(page.getByText(/shown once/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('tr', { hasText: email })).toContainText(bankName);
+  });
+
+  test('an agent cannot reach user administration', async ({ page }) => {
+    await signIn(page, USERS.agent);
+    await page.goto('/users');
+    await expect(page.getByRole('button', { name: 'Save account' })).toHaveCount(0);
   });
 
   test('an agent cannot reach bank administration', async ({ page }) => {
