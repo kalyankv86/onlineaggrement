@@ -5,6 +5,7 @@ import { AuditService, AuditEvent } from '../audit/audit.service';
 import { WorkflowService } from '../workflow/workflow.service';
 import { DocumentsService } from '../documents/documents.service';
 import { StampsService } from '../stamps/stamps.service';
+import { BanksService } from '../banks/banks.service';
 import { StorageDriver } from '../documents/storage/storage.driver';
 import {
   NotFoundError,
@@ -15,6 +16,7 @@ import {
 import { financialYear } from '../common/util/financial-year';
 import { Principal } from '../auth/auth.service';
 import { Role, availableActions } from '../workflow/state-machine';
+import type { AgreementRow } from '../workflow/workflow.service';
 
 export interface CreateAgreementInput {
   agreementTypeId: string;
@@ -63,6 +65,7 @@ export class AgreementsService {
     private readonly documents: DocumentsService,
     private readonly stamps: StampsService,
     private readonly storage: StorageDriver,
+    private readonly banks: BanksService,
   ) {}
 
   /** FR-002 — create in DRAFT. Nothing is generated until stamp and data are settled. */
@@ -288,6 +291,41 @@ export class AgreementsService {
    * document would strand the Agent, and a document without the state change
    * would be re-composed on retry and orphan the first one.
    */
+  /**
+   * Compose from the bank's own agreement document (DEC-032).
+   *
+   * No file is accepted. The text belongs to the bank, so taking it from the
+   * bank's active version is what stops one agent at an institution executing
+   * different wording from another.
+   */
+  async composeFromBankDocument(
+    params: { agreementId: string; actor: Principal },
+    ctx: { ipAddress?: string; userAgent?: string },
+  ) {
+    const agreement = await this.workflow.get(params.agreementId);
+    if (!agreement.bank_id) {
+      throw new ValidationError(
+        'This agreement has no bank, so there is no bank document to compose from. Attach your own document instead.',
+      );
+    }
+
+    const doc = await this.banks.activeDocument(agreement.bank_id);
+    const file = await this.storage.get(doc.converted_file_key ?? doc.file_key);
+
+    return this.composeAndGenerate(
+      {
+        agreement,
+        file,
+        filename: doc.original_filename,
+        contentType: 'application/pdf',
+        source: 'BANK_DOCUMENT',
+        bankDocumentId: doc.id,
+        actor: params.actor,
+      },
+      ctx,
+    );
+  }
+
   async uploadAgreementDocument(
     params: {
       agreementId: string;
@@ -299,6 +337,45 @@ export class AgreementsService {
     ctx: { ipAddress?: string; userAgent?: string },
   ) {
     const agreement = await this.workflow.get(params.agreementId);
+    if (agreement.bank_id) {
+      throw new ValidationError(
+        "This agreement belongs to a bank, so its text comes from the bank's agreement document. Uploading a different file here would let one agent execute wording another did not.",
+      );
+    }
+    return this.composeAndGenerate(
+      {
+        agreement,
+        file: params.file,
+        filename: params.filename,
+        contentType: params.contentType,
+        source: 'UPLOAD',
+        actor: params.actor,
+      },
+      ctx,
+    );
+  }
+
+  /**
+   * The composition both entry points share: stamp first, document after,
+   * signature widgets reserved, then GENERATE.
+   *
+   * Extracted rather than copied, because a second copy would be where the two
+   * paths silently diverge — and the one that mattered would be whichever was not
+   * covered by a test.
+   */
+  private async composeAndGenerate(
+    params: {
+      agreement: AgreementRow;
+      file: Buffer;
+      filename: string;
+      contentType: string;
+      source: 'UPLOAD' | 'BANK_DOCUMENT';
+      bankDocumentId?: string;
+      actor: Principal;
+    },
+    ctx: { ipAddress?: string; userAgent?: string },
+  ) {
+    const agreement = params.agreement;
     if (agreement.status !== 'DRAFT') {
       throw new ConflictError(
         `The agreement document can only be attached while the agreement is DRAFT (currently ${agreement.status})`,
@@ -309,7 +386,7 @@ export class AgreementsService {
     const type = await this.knex('agreement_types').where('id', agreement.agreement_type_id).first();
     if (type.requires_stamp) {
       const allocation = await this.knex('stamp_allocations')
-        .where({ agreement_id: params.agreementId })
+        .where({ agreement_id: agreement.id })
         .whereNull('released_at')
         .first();
       if (!allocation) {
@@ -319,7 +396,7 @@ export class AgreementsService {
       }
     }
 
-    const stampScan = await this.loadStampScan(params.agreementId);
+    const stampScan = await this.loadStampScan(agreement.id);
 
     return this.knex.transaction(async (trx) => {
       const composed = await this.documents.composeFromUpload(
@@ -358,7 +435,8 @@ export class AgreementsService {
           trigger: 'USER',
           auditEvent: AuditEvent.AGREEMENT_GENERATED,
           auditData: {
-            source: 'UPLOAD',
+            source: params.source,
+            bankDocumentId: params.bankDocumentId ?? null,
             originalFilename: params.filename,
             convertedFromWord: composed.convertedFromWord,
             pageCount: composed.pageCount,
@@ -464,11 +542,18 @@ export class AgreementsService {
         .first(),
     ]);
 
+    // The bank, so the agent's screen can say whose agreement this is rather than
+    // showing an upload box that would not apply (DEC-032).
+    const bank = agreement.bank_id
+      ? await this.knex('banks').where('id', agreement.bank_id).select('id', 'code', 'name').first()
+      : null;
+
     return {
       ...agreement,
       parties,
       versions,
       stamp: allocation ?? null,
+      bank: bank ?? null,
       availableActions: availableActions(agreement.status, actor.roles as Role[]),
     };
   }
@@ -588,7 +673,15 @@ export class AgreementsService {
     bank: { id: string; name: string; employee_signer_user_id: string | null } | null,
     type: { id: string; code: string; employee_signer_user_id?: string | null },
   ): Promise<{ id: string; full_name: string; email: string }> {
-    const userId = bank?.employee_signer_user_id ?? type.employee_signer_user_id ?? null;
+    /*
+     * A bank's signer is not allowed to fall back to the agreement type's.
+     *
+     * Falling back would mean a bank with no designated signer silently gets
+     * whoever the type happens to name — the same "chosen by default" problem as
+     * picking any user with the EMPLOYEE role, just less visible. The type's
+     * designation applies only where there is no bank.
+     */
+    const userId = bank ? bank.employee_signer_user_id : (type.employee_signer_user_id ?? null);
     if (!userId) {
       throw new ValidationError(
         bank

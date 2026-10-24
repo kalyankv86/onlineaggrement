@@ -17,6 +17,7 @@ const API = process.env.API_ORIGIN ?? 'http://localhost:3100';
 const USERS = {
   ops: 'ops@gtids.example',
   agent: 'agent@gtids.example',
+  employee: 'employee@gtids.example',
   md: 'md@gtids.example',
   auditor: 'auditor@gtids.example',
 };
@@ -106,6 +107,17 @@ async function agreementAwaitingMd(page: Page): Promise<string> {
   const link = page.getByRole('link', { name: /Continue to eSign provider/ });
   await expect(link).toBeVisible({ timeout: 30_000 });
   await completeCeremony(page, (await link.getAttribute('href'))!);
+  await page.reload();
+  await expect(page.getByText(/Awaiting GTIDS signature/i)).toBeVisible({ timeout: 30_000 });
+  await signOut(page);
+
+  // DEC-033 — the GTIDS employee countersigns before it reaches the MD.
+  await signIn(page, USERS.employee);
+  await page.goto(url);
+  await page.getByRole('button', { name: 'Sign for GTIDS' }).click();
+  const employeeLink = page.getByRole('link', { name: /Continue to eSign provider/ });
+  await expect(employeeLink).toBeVisible({ timeout: 30_000 });
+  await completeCeremony(page, (await employeeLink.getAttribute('href'))!);
   await page.reload();
   await expect(page.getByText('Awaiting MD signature')).toBeVisible({ timeout: 30_000 });
 
@@ -248,10 +260,16 @@ test.describe('GTIDS Agreement Portal', () => {
     await expect(page.getByRole('link', { name: /Open document/ })).toBeVisible();
   });
 
-  test('the MD cannot sign before the agent has (BR-003, DEC-024)', async ({ page }) => {
+  test('the MD cannot sign before the agent has (BR-003, DEC-033)', async ({ page }) => {
     await signIn(page, USERS.md);
     await page.goto(agreementUrl);
     await expect(page.getByRole('button', { name: 'Sign as Managing Director' })).toHaveCount(0);
+  });
+
+  test('the GTIDS employee cannot sign before the agent has (BR-002, DEC-033)', async ({ page }) => {
+    await signIn(page, USERS.employee);
+    await page.goto(agreementUrl);
+    await expect(page.getByRole('button', { name: 'Sign for GTIDS' })).toHaveCount(0);
   });
 
   test('the agent signs through the provider ceremony', async ({ page }) => {
@@ -267,8 +285,25 @@ test.describe('GTIDS Agreement Portal', () => {
     await completeCeremony(page, ceremonyUrl!);
 
     await page.reload();
-    await expect(page.getByText('Awaiting MD signature')).toBeVisible({ timeout: 30_000 });
+    // DEC-033 — the agent now hands over to the GTIDS employee, not the MD.
+    await expect(page.getByText(/Awaiting GTIDS signature/i)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('1 applied')).toBeVisible();
+    await expect(page.getByText('all valid')).toBeVisible();
+  });
+
+  test('the GTIDS employee countersigns, and the MD becomes next', async ({ page }) => {
+    await signIn(page, USERS.employee);
+    await page.goto(agreementUrl);
+
+    await page.getByRole('button', { name: 'Sign for GTIDS' }).click();
+    const link = page.getByRole('link', { name: /Continue to eSign provider/ });
+    await expect(link).toBeVisible({ timeout: 30_000 });
+    await completeCeremony(page, (await link.getAttribute('href'))!);
+
+    await page.reload();
+    await expect(page.getByText('Awaiting MD signature')).toBeVisible({ timeout: 30_000 });
+    // The agent's signature is still valid with a second appended after it.
+    await expect(page.getByText('2 applied')).toBeVisible();
     await expect(page.getByText('all valid')).toBeVisible();
   });
 
@@ -283,12 +318,18 @@ test.describe('GTIDS Agreement Portal', () => {
 
     await page.reload();
     await expect(page.getByText('Completed', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('2 applied')).toBeVisible();
+    await expect(page.getByText('3 applied')).toBeVisible();
     await expect(page.getByText('all valid')).toBeVisible();
 
-    // Both signature verdicts, with the prefix/whole-file distinction explained.
-    await expect(page.getByText('the whole document')).toBeVisible();
-    await expect(page.getByText(/a prefix; later revisions were appended/)).toBeVisible();
+    /*
+     * The prefix/whole-file distinction, explained per signature. Two of the
+     * three cover a prefix — the agent's and the employee's — and only the MD's
+     * covers the whole document. Asserted as counts rather than visibility,
+     * because "at least one is visible" would also pass if the earlier verdicts
+     * were silently dropped.
+     */
+    await expect(page.getByText('the whole document')).toHaveCount(1);
+    await expect(page.getByText(/a prefix; later revisions were appended/)).toHaveCount(2);
 
     await expect(page.getByRole('heading', { name: 'Public verification' })).toBeVisible();
     await expect(page.getByText('This agreement is complete. No further action is possible.')).toBeVisible();
@@ -306,6 +347,7 @@ test.describe('GTIDS Agreement Portal', () => {
       'Stamp allocated',
       'Stamp and agreement composed',
       'Agent signed',
+      'Signed for GTIDS',
       'MD signed',
       'Agreement completed',
     ]) {
@@ -341,6 +383,57 @@ test.describe('GTIDS Agreement Portal', () => {
     expect(await probe.json()).toEqual({ found: false });
   });
 
+  test('an administrator sets a bank up, and the screen says what is missing', async ({ page }) => {
+    await signIn(page, USERS.ops);
+    await page.goto('/banks');
+
+    const code = `T${Date.now().toString().slice(-6)}`;
+    const name = `Test Bank ${code}`;
+    await page.getByLabel('Short code').fill(code);
+    await page.getByLabel('Full name').fill(name);
+    await page.getByRole('button', { name: 'Add bank' }).click();
+
+    /*
+     * A bank with neither a countersigner nor a document is not usable, and the
+     * page says so rather than letting an agent discover it later.
+     *
+     * Located by row: the name also appears in the warning banner listing every
+     * unfinished bank, so a plain text match is ambiguous.
+     */
+    const row = page.locator('tr', { hasText: name });
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/not ready for use/)).toBeVisible();
+    await row.getByRole('button', { name: 'Finish setup' }).click();
+
+    await page.getByLabel('GTIDS employee who countersigns').selectOption({ index: 1 });
+    await page.getByRole('button', { name: 'Set countersigner' }).click();
+    await expect(page.getByText('Countersigner updated.')).toBeVisible({ timeout: 20_000 });
+
+    // The panel stays open across the save — `expanded` is client state and the
+    // revalidation only replaces the server-rendered data. Clicking again would
+    // close it.
+    await page.getByLabel(/agreement document/).setInputFiles({
+      name: 'bank-agreement.pdf',
+      mimeType: 'application/pdf',
+      buffer: AGREEMENT_PDF,
+    });
+    await page.getByRole('button', { name: 'Upload and activate' }).click();
+
+    // The page count is reported back, which is how a mangled conversion is
+    // caught while it is still cheap to re-export.
+    await expect(page.getByText(/Version 1 is now active/)).toBeVisible({ timeout: 60_000 });
+    // This bank is now complete. Others from earlier runs may still be listed as
+    // unfinished, so the assertion is on this row rather than on the banner.
+    await expect(row.getByText('active')).toBeVisible();
+  });
+
+  test('an agent cannot reach bank administration', async ({ page }) => {
+    await signIn(page, USERS.agent);
+    await page.goto('/banks');
+    // Not merely a hidden link: the page itself must not render its contents.
+    await expect(page.getByRole('button', { name: 'Add bank' })).toHaveCount(0);
+  });
+
   test('role gating hides administration from an auditor', async ({ page }) => {
     await signIn(page, USERS.auditor);
     await expect(page.getByRole('link', { name: 'Stamp inventory' })).toHaveCount(0);
@@ -349,8 +442,9 @@ test.describe('GTIDS Agreement Portal', () => {
   });
 
   test('rejection requires a substantive reason (FR-015)', async ({ page }) => {
-    // Rejection belongs to the MD now (DEC-024). The agreement is built here so
-    // the test never depends on one left over from an earlier test.
+    // Rejection is the MD's here. The employee may also reject, but only while
+    // the agreement is waiting on them — DEC-033 splits the two actions. The
+    // agreement is built fresh so this never depends on an earlier test.
     const url = await agreementAwaitingMd(page);
     await signIn(page, USERS.md);
     await page.goto(url);

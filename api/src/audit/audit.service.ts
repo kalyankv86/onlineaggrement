@@ -42,6 +42,8 @@ export const AuditEvent = {
   LOGIN_SUCCEEDED: 'LOGIN_SUCCEEDED',
   LOGIN_FAILED: 'LOGIN_FAILED',
   ROLE_GRANTED: 'ROLE_GRANTED',
+  /** Administrative configuration: banks, their documents, designated signers. */
+  CONFIGURATION_CHANGED: 'CONFIGURATION_CHANGED',
   AUDIT_CHAIN_BROKEN: 'AUDIT_CHAIN_BROKEN',
 } as const;
 export type AuditEventType = (typeof AuditEvent)[keyof typeof AuditEvent];

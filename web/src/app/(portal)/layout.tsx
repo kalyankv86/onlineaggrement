@@ -44,6 +44,9 @@ export default async function PortalLayout({ children }: { children: React.React
             {isAdmin && (
               <>
                 <div className="nav-section">Administration</div>
+                <Link className="nav-link" href="/banks">
+                  Banks
+                </Link>
                 <Link className="nav-link" href="/stamps">
                   Stamp inventory
                 </Link>

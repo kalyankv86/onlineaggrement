@@ -23,6 +23,10 @@ export interface AgreementRow {
   row_version: number;
   expires_at: Date | null;
   data: Record<string, unknown>;
+  /** The bank this agreement is with, or null for a GTIDS engagement (DEC-031). */
+  bank_id: string | null;
+  /** The version of that bank's agreement that was executed (DEC-032). */
+  bank_document_id: string | null;
   created_by: string;
 }
 

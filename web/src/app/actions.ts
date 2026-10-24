@@ -48,6 +48,8 @@ export interface ActionResult {
   /** Carried between the OCR step and the save step so the scan is uploaded once. */
   scanBase64?: string;
   scanContentType?: string;
+  /** A confirmation worth showing back, e.g. the page count after a conversion. */
+  message?: string;
 }
 
 /** Turn an API refusal into something a signer can act on. */
@@ -184,7 +186,11 @@ export async function updateDraft(_prev: ActionResult, form: FormData): Promise<
  */
 export async function startSigning(_prev: ActionResult, form: FormData): Promise<ActionResult> {
   const id = String(form.get('agreementId'));
-  const party = String(form.get('party')); // 'agent' | 'md'
+  // 'agent' | 'employee' | 'md' — validated against the route, not trusted blindly.
+  const party = String(form.get('party'));
+  if (!['agent', 'employee', 'md'].includes(party)) {
+    return { error: 'Unknown signing party' };
+  }
   try {
     const res = await post<{ ceremonyUrl: string }>(`/api/v1/agreements/${id}/sign/${party}`, {
       documentHash: form.get('documentHash'),
@@ -358,4 +364,87 @@ export async function registerStamp(_prev: ActionResult, form: FormData): Promis
   }
   revalidatePath('/stamps');
   return { ok: true };
+}
+
+// ── Banks (DEC-031, DEC-032, DEC-034) ────────────────────────────────────────
+
+export async function createBank(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const code = String(form.get('code') ?? '').trim();
+  const name = String(form.get('name') ?? '').trim();
+  if (!code || !name) return { error: 'A short code and the full bank name are both required' };
+
+  try {
+    await post('/api/v1/banks', {
+      code,
+      name,
+      contactEmail: String(form.get('contactEmail') ?? '').trim() || undefined,
+      contactPerson: String(form.get('contactPerson') ?? '').trim() || undefined,
+    });
+  } catch (e) {
+    return toResult(e);
+  }
+  revalidatePath('/banks');
+  return { ok: true };
+}
+
+export async function designateSigner(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const bankId = String(form.get('bankId') ?? '');
+  const employeeSignerUserId = String(form.get('employeeSignerUserId') ?? '');
+  if (!bankId || !employeeSignerUserId) return { error: 'Choose the employee who will countersign' };
+
+  try {
+    await patch(`/api/v1/banks/${bankId}`, { employeeSignerUserId });
+  } catch (e) {
+    return toResult(e);
+  }
+  revalidatePath('/banks');
+  return { ok: true };
+}
+
+/**
+ * Upload a new version of a bank's agreement.
+ *
+ * The response carries the page count, which the form shows back: a Word file
+ * that converts to one page when it should be four is the failure worth catching
+ * here, while it is still cheap to re-export.
+ */
+export async function uploadBankDocument(
+  _prev: ActionResult,
+  form: FormData,
+): Promise<ActionResult> {
+  const bankId = String(form.get('bankId') ?? '');
+  const file = form.get('document') as File | null;
+  if (!bankId) return { error: 'Which bank is this agreement for?' };
+  if (!file || file.size === 0) return { error: 'Attach the agreement document' };
+  if (file.size > 12 * 1024 * 1024) return { error: 'The document exceeds the 12 MB limit' };
+
+  try {
+    const doc = await post<{ version_no: number; page_count: number | null }>(
+      `/api/v1/banks/${bankId}/documents`,
+      {
+        documentBase64: Buffer.from(await file.arrayBuffer()).toString('base64'),
+        filename: file.name,
+        contentType: file.type || 'application/pdf',
+      },
+    );
+    revalidatePath('/banks');
+    return {
+      ok: true,
+      message: `Version ${doc.version_no} is now active — ${doc.page_count ?? '?'} page(s). Open it and check the layout before any agreement is executed from it.`,
+    };
+  } catch (e) {
+    return toResult(e);
+  }
+}
+
+/** DEC-032 — compose from the bank's agreement; the agent uploads nothing. */
+export async function composeFromBank(_prev: ActionResult, form: FormData): Promise<ActionResult> {
+  const agreementId = String(form.get('agreementId') ?? '');
+  try {
+    const res = await post<{ pageCount: number }>(`/api/v1/agreements/${agreementId}/compose`);
+    revalidatePath(`/agreements/${agreementId}`);
+    return { ok: true, message: `Composed — ${res.pageCount} pages, stamp first.` };
+  } catch (e) {
+    return toResult(e);
+  }
 }

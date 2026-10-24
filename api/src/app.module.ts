@@ -19,6 +19,8 @@ import { WorkflowService } from './workflow/workflow.service';
 import { StampsService } from './stamps/stamps.service';
 import { StampOcrService } from './stamps/stamp-ocr.service';
 import { StampsController } from './stamps/stamps.controller';
+import { BanksController } from './banks/banks.controller';
+import { BanksService } from './banks/banks.service';
 import { AgreementsService } from './agreements/agreements.service';
 import { AgreementsController } from './agreements/agreements.controller';
 import { TemplatesService } from './templates/templates.service';
@@ -59,6 +61,7 @@ import { HealthController } from './health/health.controller';
     AgreementsController,
     TemplatesController,
     StampsController,
+    BanksController,
     SigningController,
     // Refuses unless ESIGN_PROVIDER=mock, which production cannot be.
     MockCeremonyController,
@@ -71,6 +74,7 @@ import { HealthController } from './health/health.controller';
     WorkflowService,
     StampsService,
     StampOcrService,
+    BanksService,
     AgreementsService,
     TemplatesService,
     SigningService,

@@ -11,6 +11,7 @@ import { StatusBadge, ProgressRail, Notice } from '@/components/ui';
 import { ActionPanel } from '@/components/ActionPanel';
 import { StampPicker } from '@/components/StampPicker';
 import { AgreementUpload } from '@/components/AgreementUpload';
+import { BankAgreementCompose } from '@/components/BankAgreementCompose';
 import { formatDate, formatDateOnly, AUDIT_LABEL, shortHash } from '@/lib/workflow';
 import { currentPrincipal, hasRole } from '@/lib/session';
 
@@ -194,10 +195,22 @@ export default async function AgreementPage({ params }: { params: Promise<{ id: 
             <StampPicker agreementId={agreement.id} stamps={stamps ?? []} />
           )}
 
-          {/* DEC-025 — the agreement arrives as GTIDS's own document. */}
-          {agreement.status === 'DRAFT' && (
-            <AgreementUpload agreementId={agreement.id} hasStamp={!!agreement.stamp} />
-          )}
+          {/*
+            Where the agreement text comes from depends on the bank. A bank
+            agreement is composed from the bank's own document (DEC-032); a GTIDS
+            engagement uses a document the agent supplies (DEC-025). Only one of
+            these is ever applicable, so only one is shown.
+          */}
+          {agreement.status === 'DRAFT' &&
+            (agreement.bank ? (
+              <BankAgreementCompose
+                agreementId={agreement.id}
+                bankName={agreement.bank.name}
+                hasStamp={!!agreement.stamp}
+              />
+            ) : (
+              <AgreementUpload agreementId={agreement.id} hasStamp={!!agreement.stamp} />
+            ))}
         </div>
 
         <div>

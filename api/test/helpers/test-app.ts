@@ -127,6 +127,21 @@ export async function resetData(knex: Knex): Promise<void> {
     ALTER TABLE agreement_documents ENABLE TRIGGER trg_agreement_documents_immutable;
     ALTER TABLE agreements ENABLE TRIGGER trg_agreements_completed_immutable;
   `);
+
+  /*
+   * Banks, cleared in dependency order with DELETE rather than TRUNCATE.
+   *
+   * `TRUNCATE banks CASCADE` does not null the referencing column — it truncates
+   * the referencing *table*, and `users.bank_id` points here, so it deletes every
+   * fixture user. Detaching first and then deleting touches only what it should.
+   *
+   * The detach also fixes contamination between suites: `users` is not truncated,
+   * so an agent a bank test attached stayed attached for every suite that ran
+   * after it, surfacing as an unrelated upload being refused.
+   */
+  await knex('users').whereNotNull('bank_id').update({ bank_id: null });
+  await knex('bank_agreement_documents').del();
+  await knex('banks').del();
 }
 
 export interface SeededFixtures {

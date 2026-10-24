@@ -81,6 +81,10 @@ export type AgreementStatus =
   | 'PENDING_EMPLOYEE_APPROVAL'
   | 'EMPLOYEE_APPROVING'
   | 'EMPLOYEE_APPROVED'
+  // DEC-033 — the employee signs between the agent and the MD.
+  | 'PENDING_EMPLOYEE_SIGNATURE'
+  | 'EMPLOYEE_SIGNING'
+  | 'EMPLOYEE_SIGNED'
   | 'PENDING_MD_SIGNATURE'
   | 'MD_SIGNING'
   | 'COMPLETED'
@@ -126,6 +130,8 @@ export interface AgreementDetail extends AgreementSummary {
   parties: Party[];
   versions: AgreementVersion[];
   stamp: { stamp_number: string; denomination: string; state_code: string } | null;
+  /** The bank this agreement is with, or null for a GTIDS engagement (DEC-031). */
+  bank: { id: string; code: string; name: string } | null;
   availableActions: string[];
 }
 

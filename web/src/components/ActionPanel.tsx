@@ -48,13 +48,19 @@ export function ActionPanel({
     (s) => s.error,
   );
 
-  // GENERATE is offered by the upload panel, not here (DEC-025).
+  // GENERATE is offered by the upload or compose panel, not here (DEC-025/032).
   const nothingToDo =
     !can('AGENT_SIGN_INITIATE') &&
+    !can('EMPLOYEE_SIGN_INITIATE') &&
     !can('MD_SIGN_INITIATE') &&
     !can('REJECT') &&
+    !can('EMPLOYEE_REJECT') &&
     !can('CORRECT') &&
     !can('CANCEL');
+
+  // Rejection is a different action for the employee and the MD, because each may
+  // only reject while the agreement is waiting on them (DEC-033).
+  const canReject = can('REJECT') || can('EMPLOYEE_REJECT');
 
   return (
     <div className="card">
@@ -102,6 +108,17 @@ export function ActionPanel({
           </form>
         )}
 
+        {can('EMPLOYEE_SIGN_INITIATE') && documentHash && (
+          <form action={signAction}>
+            <input type="hidden" name="agreementId" value={agreementId} />
+            <input type="hidden" name="party" value="employee" />
+            <input type="hidden" name="documentHash" value={documentHash} />
+            <button type="submit" disabled={signPending}>
+              {signPending ? 'Starting…' : 'Sign for GTIDS'}
+            </button>
+          </form>
+        )}
+
         {can('MD_SIGN_INITIATE') && documentHash && (
           <form action={signAction}>
             <input type="hidden" name="agreementId" value={agreementId} />
@@ -122,7 +139,7 @@ export function ActionPanel({
           </form>
         )}
 
-        {can('REJECT') && !showReject && (
+        {canReject && !showReject && (
           <button className="btn-danger" type="button" onClick={() => setShowReject(true)}>
             Reject
           </button>
@@ -135,7 +152,7 @@ export function ActionPanel({
         )}
       </div>
 
-      {showReject && can('REJECT') && (
+      {showReject && canReject && (
         <form action={rejectAction} style={{ marginTop: 16 }}>
           <input type="hidden" name="agreementId" value={agreementId} />
           <div className="field">

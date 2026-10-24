@@ -17,6 +17,11 @@ export const STATUS_LABEL: Record<AgreementStatus, string> = {
   PENDING_EMPLOYEE_APPROVAL: 'Awaiting employee approval (legacy)',
   EMPLOYEE_APPROVING: 'Employee reviewing (legacy)',
   EMPLOYEE_APPROVED: 'Employee approved (legacy)',
+  // DEC-033 — the employee signs. "GTIDS" rather than "employee" because the
+  // reader is the counterparty's agent, to whom the signer is the organisation.
+  PENDING_EMPLOYEE_SIGNATURE: 'Awaiting GTIDS signature',
+  EMPLOYEE_SIGNING: 'GTIDS signing in progress',
+  EMPLOYEE_SIGNED: 'GTIDS signed',
   PENDING_MD_SIGNATURE: 'Awaiting MD signature',
   MD_SIGNING: 'MD signing in progress',
   COMPLETED: 'Completed',
@@ -36,6 +41,9 @@ export const STATUS_TONE: Record<AgreementStatus, StatusTone> = {
   PENDING_EMPLOYEE_APPROVAL: 'waiting',
   EMPLOYEE_APPROVING: 'progress',
   EMPLOYEE_APPROVED: 'progress',
+  PENDING_EMPLOYEE_SIGNATURE: 'waiting',
+  EMPLOYEE_SIGNING: 'progress',
+  EMPLOYEE_SIGNED: 'progress',
   PENDING_MD_SIGNATURE: 'waiting',
   MD_SIGNING: 'progress',
   COMPLETED: 'success',
@@ -46,52 +54,67 @@ export const STATUS_TONE: Record<AgreementStatus, StatusTone> = {
 };
 
 /**
- * The mandated milestones (DEC-024). Two, not three — the Employee approval step
- * was removed. Document preparation is shown as a step of its own because with
- * uploaded agreements it is real work someone has to do, not an instant.
+ * The mandated milestones (DEC-033). Document preparation is a step of its own
+ * because attaching the stamp and composing the agreement is real work someone
+ * has to do, not an instant.
  */
 export const MILESTONES = [
   { key: 'PREPARED', label: 'Stamp & agreement attached' },
   { key: 'AGENT', label: 'Agent signs' },
+  { key: 'EMPLOYEE', label: 'GTIDS signs' },
   { key: 'MD', label: 'MD signs' },
 ] as const;
 
 export type MilestoneState = 'done' | 'active' | 'pending' | 'stopped';
 
-export function milestoneStates(status: AgreementStatus): MilestoneState[] {
-  const order: AgreementStatus[] = [
-    'DRAFT',
-    'READY_FOR_AGENT_SIGNATURE',
-    'AGENT_SIGNING',
-    'AGENT_SIGNED',
-    'PENDING_MD_SIGNATURE',
-    'MD_SIGNING',
-    'COMPLETED',
-  ];
+/**
+ * The workflow in order, with the state each milestone is reached at.
+ *
+ * Derived from one list rather than written as nested conditionals per
+ * milestone: adding the employee to the previous form meant editing three
+ * interlocking ternaries, and getting any of them wrong would have mislabelled
+ * the step a signer was waiting on.
+ */
+const PROGRESS_ORDER: AgreementStatus[] = [
+  'DRAFT',
+  'READY_FOR_AGENT_SIGNATURE',
+  'AGENT_SIGNING',
+  'AGENT_SIGNED',
+  'PENDING_EMPLOYEE_SIGNATURE',
+  'EMPLOYEE_SIGNING',
+  'EMPLOYEE_SIGNED',
+  'PENDING_MD_SIGNATURE',
+  'MD_SIGNING',
+  'COMPLETED',
+];
 
+/** Where each milestone begins, and the state by which it is complete. */
+const MILESTONE_RANGE: { starts: AgreementStatus; doneBy: AgreementStatus }[] = [
+  { starts: 'DRAFT', doneBy: 'READY_FOR_AGENT_SIGNATURE' },
+  { starts: 'READY_FOR_AGENT_SIGNATURE', doneBy: 'AGENT_SIGNED' },
+  { starts: 'PENDING_EMPLOYEE_SIGNATURE', doneBy: 'EMPLOYEE_SIGNED' },
+  { starts: 'PENDING_MD_SIGNATURE', doneBy: 'COMPLETED' },
+];
+
+export function milestoneStates(status: AgreementStatus): MilestoneState[] {
   if (['REJECTED', 'CANCELLED', 'EXPIRED'].includes(status)) {
-    return ['stopped', 'stopped', 'stopped'];
+    return MILESTONE_RANGE.map(() => 'stopped');
   }
 
-  const i = order.indexOf(status);
-  return [
-    i > order.indexOf('DRAFT') ? 'done' : 'active',
-    i >= order.indexOf('AGENT_SIGNED')
-      ? 'done'
-      : i >= order.indexOf('READY_FOR_AGENT_SIGNATURE')
-        ? 'active'
-        : 'pending',
-    status === 'COMPLETED'
-      ? 'done'
-      : i >= order.indexOf('PENDING_MD_SIGNATURE')
-        ? 'active'
-        : 'pending',
-  ];
+  const at = PROGRESS_ORDER.indexOf(status);
+  return MILESTONE_RANGE.map(({ starts, doneBy }) => {
+    if (at >= PROGRESS_ORDER.indexOf(doneBy)) return 'done';
+    if (at >= PROGRESS_ORDER.indexOf(starts)) return 'active';
+    return 'pending';
+  });
 }
 
 /** Human labels for audit event types (SRS §10). */
 export const AUDIT_LABEL: Record<string, string> = {
   AGREEMENT_CREATED: 'Agreement created',
+  EMPLOYEE_SIGN_INITIATED: 'GTIDS signing started',
+  EMPLOYEE_SIGNED: 'Signed for GTIDS',
+  CONFIGURATION_CHANGED: 'Configuration changed',
   AGREEMENT_CORRECTED: 'Agreement corrected',
   STAMP_UPLOADED: 'Stamp paper registered',
   STAMP_ALLOCATED: 'Stamp allocated',

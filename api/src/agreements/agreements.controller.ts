@@ -53,6 +53,12 @@ class CreateAgreementDto {
   @IsOptional() @IsUUID() templateVersionId?: string;
   @IsOptional() @IsString() placeOfExecutionState?: string;
   /**
+   * Only honoured for a caller who belongs to no bank — an administrator acting
+   * for an agent. An agent's own bank always wins, and naming another is refused
+   * rather than ignored (DEC-031).
+   */
+  @IsOptional() @IsUUID() bankId?: string;
+  /**
    * Template variable values. Shape is not fixed here — it is validated against
    * the template version's own `variables_schema` in the service, which is where
    * the requirement actually lives (FR-003).
@@ -171,6 +177,23 @@ export class AgreementsController {
       { agreementId: id, file, filename: dto.filename, contentType: dto.contentType ?? 'application/pdf', actor },
       clientContext(req),
     );
+  }
+
+  /**
+   * DEC-032 — compose from the bank's own agreement document.
+   *
+   * No body: the text is the bank's, so there is nothing for the caller to
+   * supply. An agent at a bank uses this route; `POST :id/document` is for
+   * GTIDS engagements that carry no bank.
+   */
+  @Post(':id/compose')
+  @Roles('AGENT', 'AGREEMENT_ADMIN', 'SUPER_ADMIN')
+  async composeFromBank(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+    @Req() req: Request,
+  ) {
+    return this.agreements.composeFromBankDocument({ agreementId: id, actor }, clientContext(req));
   }
 
   @Post(':id/generate')
