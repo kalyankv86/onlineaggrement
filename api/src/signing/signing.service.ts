@@ -25,7 +25,9 @@ import {
   ValidationError,
 } from '../common/errors/domain.errors';
 import { generateVerificationToken } from '../common/util/crypto.util';
+import { financialYear } from '../common/util/financial-year';
 import type { AgreementState, WorkflowAction } from '../workflow/state-machine';
+import type { AgreementRow } from '../workflow/workflow.service';
 
 export interface ActionContext {
   ipAddress?: string;
@@ -335,7 +337,10 @@ export class SigningService {
             );
           }
         } else {
-          // The last signature. Completion mints the public verification token.
+          // The last signature. Completion mints the public verification token
+          // and the per-agent execution reference (DEC-036).
+          const executionReference = await this.mintExecutionReference(agreement, trx);
+
           await this.workflow.transition(
             {
               agreementId: agreement.id,
@@ -344,10 +349,15 @@ export class SigningService {
               actorRoles: ['SYSTEM'],
               trigger: 'PROVIDER_CALLBACK',
               auditEvent: spec.signedEvent,
-              auditData: { documentHash: stored.documentHash, transactionId },
+              auditData: {
+                documentHash: stored.documentHash,
+                transactionId,
+                executionReference,
+              },
               patch: {
                 completed_at: new Date(),
                 verification_token: generateVerificationToken(),
+                ...(executionReference ? { execution_reference: executionReference } : {}),
                 expires_at: null,
               },
             },
@@ -490,6 +500,61 @@ export class SigningService {
    * in both directions: no email without a committed completion, and no committed
    * completion without an email eventually going out.
    */
+  /**
+   * The per-agent execution reference (DEC-036), e.g. `UBI/AG0042/2026-27/003`.
+   *
+   * Allocated by the database so two agreements completing at the same instant
+   * cannot receive the same one. Minted only if the agreement does not already
+   * carry one: a provider callback can be retried, and a second mint would both
+   * burn a number and leave the record disagreeing with the email already sent.
+   *
+   * Null where there is no agent user to attribute it to — an agreement with an
+   * external counterparty who has no account. Those keep the agreement number as
+   * their only identifier, which is what they had before.
+   */
+  private async mintExecutionReference(
+    agreement: AgreementRow,
+    trx: Knex.Transaction,
+  ): Promise<string | null> {
+    const existing = await trx('agreements')
+      .where('id', agreement.id)
+      .select('execution_reference')
+      .first();
+    if (existing?.execution_reference) return existing.execution_reference;
+
+    /*
+     * Resolved by user_id where the party carries one, and otherwise by email.
+     *
+     * A party row's user_id is optional — an agreement may name someone who has
+     * no account, and even one who does is often recorded by email alone. The
+     * authorisation check already matches on either, so matching only on user_id
+     * here silently produced no reference at all for the ordinary case.
+     */
+    const agent = await trx('agreement_parties as p')
+      .leftJoin('users as u', function () {
+        this.on('u.id', 'p.user_id').orOn(
+          trx.raw('lower(u.email) = lower(p.email)'),
+        );
+      })
+      .where({ 'p.agreement_id': agreement.id, 'p.party_type': 'AGENT' })
+      .whereNotNull('u.agent_code')
+      .select('u.agent_code')
+      .first();
+    if (!agent?.agent_code) return null;
+
+    // GT for a GTIDS engagement that belongs to no bank, so the reference is
+    // still readable rather than carrying an empty segment.
+    const bank = agreement.bank_id
+      ? await trx('banks').where('id', agreement.bank_id).select('code').first()
+      : null;
+
+    const { rows } = await trx.raw(
+      'SELECT next_execution_reference(?, ?, ?) AS reference',
+      [bank?.code ?? 'GT', agent.agent_code, financialYear()],
+    );
+    return rows[0].reference as string;
+  }
+
   private async finalize(agreementId: string, finalHash: string, trx: Knex.Transaction): Promise<void> {
     await this.stamps.markUsed(agreementId, null, trx);
 

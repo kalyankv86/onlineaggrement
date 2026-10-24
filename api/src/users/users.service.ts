@@ -21,6 +21,8 @@ export type GrantableRole = (typeof GRANTABLE_ROLES)[number];
 export interface UserRow {
   id: string;
   email: string;
+  /** Appears in the execution reference of every agreement they sign (DEC-036). */
+  agent_code?: string | null;
   full_name: string;
   mobile: string | null;
   is_active: boolean;
@@ -63,6 +65,7 @@ export class UsersService {
         'u.mobile',
         'u.is_active',
         'u.bank_id',
+        'u.agent_code',
         'u.last_login_at',
         'u.locked_until',
         'b.name as bank_name',
@@ -133,6 +136,26 @@ export class UsersService {
           })
           .returning('id');
         id = row.id;
+      }
+
+      /*
+       * DEC-036 — an agent needs a code before they can execute anything, since
+       * it forms part of the execution reference. Assigned once and never
+       * reassigned: the code appears in references that outlive the account, so
+       * reusing it would give two agreements the same reference for different
+       * people.
+       */
+      if (input.roles.includes('AGENT')) {
+        const current = await trx('users').where('id', id).select('agent_code').first();
+        if (!current?.agent_code) {
+          await trx.raw(
+            `UPDATE users SET agent_code = 'AG' || lpad((
+               coalesce((SELECT max(nullif(regexp_replace(agent_code, '\\D', '', 'g'), '')::int)
+                           FROM users), 0) + 1)::text, 4, '0')
+             WHERE id = ?`,
+            [id],
+          );
+        }
       }
 
       const roleIds = await trx('roles').whereIn('code', input.roles).select('id', 'code');

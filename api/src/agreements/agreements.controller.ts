@@ -115,12 +115,17 @@ export class AgreementsController {
   async list(
     @Query('status') status?: string,
     @Query('agreementTypeId') agreementTypeId?: string,
+    /** DEC-036 — an execution reference, an agent code, or an agreement number. */
+    @Query('reference') reference?: string,
+    @Query('bankId') bankId?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
     return this.agreements.list({
       status,
       agreementTypeId,
+      reference,
+      bankId,
       page: page ? Number(page) : undefined,
       pageSize: pageSize ? Number(pageSize) : undefined,
     });

@@ -92,6 +92,12 @@ export default async function AgreementsPage({
                       <Link href={`/agreements/${a.id}`} className="mono">
                         {a.agreement_number}
                       </Link>
+                      {/* DEC-036 — the agent's own reference, once executed. */}
+                      {a.execution_reference && (
+                        <div className="faint mono" style={{ fontSize: 12 }}>
+                          {a.execution_reference}
+                        </div>
+                      )}
                     </td>
                     <td>
                       <StatusBadge status={a.status} />

@@ -229,6 +229,9 @@ export class NotificationsService {
     const lines: Record<NotificationEvent, string[]> = {
       COMPLETED: [
         `Agreement ${agreementNumber} has been fully executed.`,
+        agreement?.execution_reference
+          ? `Your reference for this agreement: ${agreement.execution_reference}`
+          : '',
         'Every party has completed their step and the signed document is final.',
         link ? `Download (link expires shortly): ${link}` : '',
         verifyUrl ? `Verify at any time: ${verifyUrl}` : '',

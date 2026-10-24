@@ -27,6 +27,8 @@ export interface AgreementRow {
   bank_id: string | null;
   /** The version of that bank's agreement that was executed (DEC-032). */
   bank_document_id: string | null;
+  /** Per-agent identifier, minted at completion. Null until then (DEC-036). */
+  execution_reference: string | null;
   created_by: string;
 }
 

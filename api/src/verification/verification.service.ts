@@ -53,6 +53,14 @@ export class VerificationService {
         'agreements.status',
         'agreements.completed_at',
         'agreement_types.name as type_name',
+        /*
+         * execution_reference is deliberately NOT selected (DEC-036).
+         *
+         * It encodes the bank and the agent, so publishing it would identify a
+         * party to anyone holding a verification link — which is exactly what
+         * BR-010 and AC-17 exist to prevent. The verification token is the
+         * public handle; the execution reference is internal.
+         */
       )
       .first();
 

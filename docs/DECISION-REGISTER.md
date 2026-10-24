@@ -475,7 +475,7 @@ remains DEC-017, whose claim that a "module skeleton ships in v1" overstates wha
 exists — `api/src/digilocker/` is an empty directory.
 
 ### DEC-036 — A per-agent agreement identifier
-**Severity:** MEDIUM · **Status:** OPEN · **Owner:** GTIDS
+**Severity:** MEDIUM · **Status:** IMPLEMENTED (24 Oct 2026) · **Owner:** GTIDS
 
 Raised by GTIDS, 24 Oct 2026: "once signed we should have a unique identifier for
 each agreement for each agent."
@@ -485,9 +485,42 @@ unique per agreement, and `verification_token` is a unique 32-character public
 reference minted at completion. What does **not** exist is any bank or agent
 identity *within* the identifier, or a per-agent sequence.
 
-**Needs a decision before implementing**, because changing the numbering scheme
-after agreements are executed is expensive: whether the requirement is (a) the
-existing number is sufficient and only needs to be searchable by agent, (b) the
-bank code should appear in the number, or (c) each agent needs their own sequence
-(`UBI/AGENT-0042/003`). Interacts with DEC-012 and DEC-013, both still open on
-numbering and retention.
+**Decided:** a **second** identifier, the *execution reference*, minted when the
+agreement completes:
+
+```
+UBI / AG0042 / 2026-27 / 003
+bank  agent    financial  that agent's third
+code  code     year       completed agreement that year
+```
+
+`agreement_number` is left alone. It is on records already issued, FR-026 defines
+its format, and re-formatting it would split the register — and it could not
+carry the agent anyway, because it is allocated at creation when the agent is not
+yet final. Two identifiers answer two different questions: which agreement this
+is in the register, and which of this agent's agreements it is.
+
+Design points that are not arbitrary:
+
+- **Allocated by the database** (`next_execution_reference`), like agreement
+  numbers. A counter read then written in application code gives two agreements
+  the same reference when they complete at the same instant.
+- **Minted only if absent.** A provider callback can be replayed; a second mint
+  would burn a number and leave the record disagreeing with the email already
+  sent.
+- **The agent code is never reused.** It appears in references that outlive the
+  account, so freeing a deactivated agent's code would give two agreements the
+  same reference for different people.
+- **Not exposed by public verification.** It encodes the bank and the agent, so
+  publishing it would identify a party to anyone holding a verification link —
+  which is what BR-010 and AC-17 exist to prevent. The verification token stays
+  the public handle.
+- **`GT` where there is no bank**, so a GTIDS engagement still reads sensibly
+  rather than carrying an empty segment.
+
+Searching the register by `reference` matches an exact reference, an agent code
+alone (returning that agent's whole set), or an agreement number.
+
+**Still reversible.** No agreement executed on the mock provider is binding, so
+the format can change up to go-live. After that it cannot, because the reference
+will be on executed instruments.

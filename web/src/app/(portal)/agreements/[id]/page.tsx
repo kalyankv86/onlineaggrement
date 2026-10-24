@@ -65,6 +65,17 @@ export default async function AgreementPage({ params }: { params: Promise<{ id: 
           <div className="row">
             <StatusBadge status={agreement.status} />
             <span className="faint">version {agreement.current_version}</span>
+            {/*
+              DEC-036 — the executing agent's own reference, minted at completion.
+              Shown beside the agreement number rather than replacing it: the
+              number identifies the agreement in the register, this identifies it
+              within one agent's set.
+            */}
+            {agreement.execution_reference && (
+              <span className="faint mono" title="The executing agent's reference for this agreement">
+                {agreement.execution_reference}
+              </span>
+            )}
           </div>
         </div>
       </div>

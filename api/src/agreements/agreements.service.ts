@@ -558,7 +558,14 @@ export class AgreementsService {
     };
   }
 
-  async list(filter: { status?: string; agreementTypeId?: string; page?: number; pageSize?: number }) {
+  async list(filter: {
+    status?: string;
+    agreementTypeId?: string;
+    reference?: string;
+    bankId?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
     const pageSize = Math.min(filter.pageSize ?? 25, 100);
     const page = Math.max(filter.page ?? 1, 1);
 
@@ -566,6 +573,23 @@ export class AgreementsService {
       .modify((q) => {
         if (filter.status) q.where('status', filter.status);
         if (filter.agreementTypeId) q.where('agreement_type_id', filter.agreementTypeId);
+        if (filter.bankId) q.where('bank_id', filter.bankId);
+        /*
+         * DEC-036 — one search box over both identifiers.
+         *
+         * A prefix match so an agent code alone returns that agent's whole set,
+         * which is what "an identifier per agreement per agent" is for. Case is
+         * ignored because the reference is read off a screen or an email.
+         */
+        if (filter.reference) {
+          const term = filter.reference.trim();
+          q.where((w) =>
+            w
+              .whereILike('execution_reference', `${term}%`)
+              .orWhereILike('execution_reference', `%/${term}/%`)
+              .orWhereILike('agreement_number', `%${term}%`),
+          );
+        }
       });
 
     const [{ count }] = await query.clone().count<{ count: string }[]>('* as count');
@@ -577,6 +601,7 @@ export class AgreementsService {
       .select(
         'id',
         'agreement_number',
+        'execution_reference',
         'status',
         'current_version',
         'created_at',

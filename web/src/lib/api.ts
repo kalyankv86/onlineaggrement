@@ -94,6 +94,8 @@ export type AgreementStatus =
   | 'SIGNATURE_FAILED';
 
 export interface AgreementSummary {
+  /** DEC-036 — per-agent identifier, minted at completion. Null until then. */
+  execution_reference?: string | null;
   id: string;
   agreement_number: string;
   status: AgreementStatus;
