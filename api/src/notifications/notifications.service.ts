@@ -8,7 +8,10 @@ import { DocumentsService } from '../documents/documents.service';
 
 export type NotificationEvent =
   | 'AGENT_SIGNED'
+  /** DEC-004's attested approval; kept for agreements executed before DEC-024. */
   | 'EMPLOYEE_APPROVED'
+  /** DEC-033 — the employee's signature, which hands over to the MD. */
+  | 'EMPLOYEE_SIGNED'
   | 'COMPLETED'
   | 'REJECTED'
   | 'REMINDER';
@@ -28,8 +31,9 @@ export interface EnqueueRequest {
 }
 
 const SUBJECTS: Record<NotificationEvent, (n: string) => string> = {
-  AGENT_SIGNED: (n) => `Action required: agreement ${n} awaits your approval`,
+  AGENT_SIGNED: (n) => `Action required: agreement ${n} awaits your signature`,
   EMPLOYEE_APPROVED: (n) => `Action required: agreement ${n} awaits your signature`,
+  EMPLOYEE_SIGNED: (n) => `Action required: agreement ${n} awaits your signature`,
   COMPLETED: (n) => `Agreement ${n} is complete`,
   REJECTED: (n) => `Agreement ${n} was rejected`,
   REMINDER: (n) => `Reminder: agreement ${n} is awaiting your action`,
@@ -225,15 +229,20 @@ export class NotificationsService {
     const lines: Record<NotificationEvent, string[]> = {
       COMPLETED: [
         `Agreement ${agreementNumber} has been fully executed.`,
-        'All three parties have completed their steps and the signed document is final.',
+        'Every party has completed their step and the signed document is final.',
         link ? `Download (link expires shortly): ${link}` : '',
         verifyUrl ? `Verify at any time: ${verifyUrl}` : '',
       ],
       AGENT_SIGNED: [
-        `Agreement ${agreementNumber} has been signed by the Agent and is awaiting your approval.`,
+        `Agreement ${agreementNumber} has been signed by the Agent and is awaiting your signature.`,
       ],
+      // DEC-004's attested approval. Only reachable for agreements executed
+      // before DEC-024, whose notifications may still be in the outbox.
       EMPLOYEE_APPROVED: [
         `Agreement ${agreementNumber} has been approved and is awaiting your signature.`,
+      ],
+      EMPLOYEE_SIGNED: [
+        `Agreement ${agreementNumber} has been signed by the Agent and by GTIDS, and is awaiting your signature.`,
       ],
       REJECTED: [
         `Agreement ${agreementNumber} was rejected by the ${row.payload.rejectedBy ?? 'approver'}.`,
@@ -303,6 +312,7 @@ export class NotificationsService {
 function pendingRecipient(status: string): PartyType | null {
   if (status === 'READY_FOR_AGENT_SIGNATURE' || status === 'AGENT_SIGNING') return 'AGENT';
   if (status === 'PENDING_EMPLOYEE_APPROVAL' || status === 'EMPLOYEE_APPROVING') return 'EMPLOYEE';
+  if (status === 'PENDING_EMPLOYEE_SIGNATURE' || status === 'EMPLOYEE_SIGNING') return 'EMPLOYEE';
   if (status === 'PENDING_MD_SIGNATURE' || status === 'MD_SIGNING') return 'MD';
   return null;
 }

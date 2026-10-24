@@ -14,7 +14,7 @@ const ROLES = [
   ['SUPER_ADMIN', 'Super Administrator', 'System configuration, roles, templates, integrations'],
   ['AGREEMENT_ADMIN', 'Agreement Administrator', 'Types, templates, stamp inventory, operations'],
   ['AGENT', 'Agent', 'Initiates agreements, enters data, reviews and signs'],
-  ['EMPLOYEE', 'Employee', 'Reviews the agent-signed agreement and approves it'],
+  ['EMPLOYEE', 'Employee', 'Reviews the agent-signed agreement and countersigns it (DEC-033)'],
   ['MD', 'Managing Director', 'Final review and digital signature'],
   ['MD_DELEGATE', 'MD Delegate', 'Time-bounded delegate for MD signature (DEC-014)'],
   ['AUDITOR', 'Auditor', 'Read-only access to agreements, signatures and audit trails'],
@@ -36,7 +36,9 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'stamp:allocate', 'report:read', 'audit:read',
   ],
   AGENT: ['agreement:create', 'agreement:read', 'agreement:generate', 'agreement:sign', 'agreement:correct', 'stamp:allocate'],
-  EMPLOYEE: ['agreement:read', 'agreement:approve', 'agreement:reject'],
+  // DEC-033 — the employee signs rather than approves, so they need the signing
+  // permission; `agreement:approve` is retained for pre-DEC-024 records.
+  EMPLOYEE: ['agreement:read', 'agreement:sign', 'agreement:approve', 'agreement:reject'],
   MD: ['agreement:read', 'agreement:sign', 'agreement:reject', 'report:read'],
   MD_DELEGATE: ['agreement:read', 'agreement:sign', 'agreement:reject'],
   AUDITOR: ['agreement:read', 'audit:read', 'report:read'],
@@ -154,9 +156,13 @@ export async function seed(knex: Knex): Promise<void> {
         document_source: 'UPLOAD',
         // DEC-028 — Accounts receives the completion copy.
         accounts_email: 'accounts@gtids.example',
+        // DEC-033/034 — the GTIDS employee who countersigns. Required: an
+        // agreement cannot be created for a type with no designated signer, which
+        // is deliberate, so the seed must set one.
+        employee_signer_user_id: userIds.get('employee@gtids.example'),
       })
       .onConflict('code')
-      .merge(['document_source', 'accounts_email'])
+      .merge(['document_source', 'accounts_email', 'employee_signer_user_id'])
       .returning('id');
 
     // DEC-008 / DEC-024 — two stages now wait on a human.

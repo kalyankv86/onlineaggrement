@@ -219,9 +219,18 @@ export class WorkflowService {
     return this.knex.transaction(async (trx) => {
       const agreement = await this.lockAgreement(params.agreementId, trx);
 
+      /*
+       * Every signed document on the version being closed.
+       *
+       * Expressed as "not UNSIGNED" rather than as a list of signed states. The
+       * list form silently under-counted the moment DEC-033 added a state to it:
+       * the employee's signature was voided but not recorded as voided, so the
+       * history understated what the rejection discarded.
+       */
       const voided = await trx('agreement_versions')
         .where({ agreement_id: agreement.id, version_no: agreement.current_version })
-        .whereIn('signature_state', ['AGENT_SIGNED', 'EMPLOYEE_ATTESTED', 'FINAL'])
+        .whereNot('signature_state', 'UNSIGNED')
+        .whereNotNull('signature_state')
         .count<{ count: string }[]>('* as count');
 
       await trx('agreement_version_history').insert({

@@ -204,11 +204,48 @@ async function main(): Promise<void> {
   const afterAgent = await call('GET', `/api/v1/agreements/${id}/verify-signatures`, { token: tokens.agent });
   check(afterAgent.count === 1 && afterAgent.allValid, 'agent signature applied and valid');
   check(
-    (await call('GET', `/api/v1/agreements/${id}`, { token: tokens.agent })).status === 'PENDING_MD_SIGNATURE',
-    'advanced straight to PENDING_MD_SIGNATURE (DEC-024)',
+    (await call('GET', `/api/v1/agreements/${id}`, { token: tokens.agent })).status ===
+      'PENDING_EMPLOYEE_SIGNATURE',
+    'advanced to the GTIDS employee (DEC-033)',
   );
 
-  step('7. MD signs (FR-013)');
+  step('7. The sequence still holds at the second gate');
+  const earlyMd2 = await fetch(`${API}/api/v1/agreements/${id}/sign/md`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.md}` },
+    body: JSON.stringify({
+      documentHash: (
+        await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.md })
+      ).documentHash,
+    }),
+  });
+  check(earlyMd2.status === 409, 'MD signature refused before the employee signs (BR-003)');
+
+  step('8. The GTIDS employee countersigns (FR-012, DEC-033)');
+  const empHash = (
+    await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.employee })
+  ).documentHash;
+  const empSign = await call('POST', `/api/v1/agreements/${id}/sign/employee`, {
+    token: tokens.employee,
+    body: { documentHash: empHash },
+    expect: 201,
+  });
+  await call('POST', new URL(empSign.ceremonyUrl).pathname + '/complete');
+
+  const afterEmployee = await call('GET', `/api/v1/agreements/${id}/verify-signatures`, {
+    token: tokens.employee,
+  });
+  check(
+    afterEmployee.count === 2 && afterEmployee.allValid,
+    'employee signature applied; the agent\'s remains valid beneath it',
+  );
+  check(
+    (await call('GET', `/api/v1/agreements/${id}`, { token: tokens.md })).status ===
+      'PENDING_MD_SIGNATURE',
+    'advanced to the MD',
+  );
+
+  step('9. MD signs (FR-013)');
   const mdHash = (await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.md })).documentHash;
   const mdSign = await call('POST', `/api/v1/agreements/${id}/sign/md`, {
     token: tokens.md,
@@ -217,20 +254,20 @@ async function main(): Promise<void> {
   });
   await call('POST', new URL(mdSign.ceremonyUrl).pathname + '/complete');
 
-  step('8. Completion (FR-016, BR-007)');
+  step('10. Completion (FR-016, BR-007)');
   const final = await call('GET', `/api/v1/agreements/${id}`, { token: tokens.md });
   check(final.status === 'COMPLETED', 'agreement is COMPLETED');
   check(!!final.completed_at, 'completion timestamp recorded');
   check(final.stamp !== null, 'stamp remains attached to the record');
 
   const report = await call('GET', `/api/v1/agreements/${id}/verify-signatures`, { token: tokens.md });
-  check(report.count === 2 && report.allValid, `AC-10 — both signatures valid on the final document`);
+  check(report.count === 3 && report.allValid, `AC-10 — both signatures valid on the final document`);
   for (const s of report.signatures) {
     info(`signature ${s.index}: ${s.signerCommonName} — covers ${s.coversBytes.toLocaleString()} bytes` +
       (s.coversWholeFile ? ' (whole file)' : ' (prefix; later revisions appended)'));
   }
 
-  step('9. Notifications to the agent, the MD and accounts (FR-018, DEC-028)');
+  step('11. Notifications to every signer and accounts (FR-018, DEC-028, DEC-033)');
   /*
    * The report is register-wide. Comparing against a baseline taken before this
    * run isolates this agreement's recipients — reporting the running total as if
@@ -243,20 +280,20 @@ async function main(): Promise<void> {
 
   const addedRecipients = (await completionRecipients()) - recipientsBefore;
   check(
-    addedRecipients === 3,
-    `this agreement queued ${addedRecipients} completion recipients — the agent, the MD and accounts`,
+    addedRecipients === 4,
+    `this agreement queued ${addedRecipients} completion recipients — all three signers and accounts`,
   );
 
-  step('10. Audit trail and chain integrity (FR-017, FR-025)');
+  step('12. Audit trail and chain integrity (FR-017, FR-025)');
   const audit = await call('GET', `/api/v1/agreements/${id}/audit`, { token: tokens.auditor });
   const events: string[] = audit.entries.map((e: { event_type: string }) => e.event_type);
   for (const required of ['AGREEMENT_CREATED', 'STAMP_ALLOCATED', 'AGREEMENT_GENERATED',
-    'AGENT_SIGNED', 'MD_SIGNED', 'AGREEMENT_COMPLETED']) {
+    'AGENT_SIGNED', 'EMPLOYEE_SIGNED', 'MD_SIGNED', 'AGREEMENT_COMPLETED']) {
     check(events.includes(required), `audit records ${required}`);
   }
   check(audit.chain.intact, `hash chain intact across ${audit.chain.recordCount} records`);
 
-  step('11. Public verification (FR-019, BR-010)');
+  step('13. Public verification (FR-019, BR-010)');
   const qr = await call('GET', `/api/v1/agreements/${id}/qr`, { token: tokens.agent });
   const token = qr.url.split('/').pop();
   const verified = await call('GET', `/api/v1/verify/${token}`);
@@ -268,7 +305,7 @@ async function main(): Promise<void> {
   const byNumber = await call('GET', `/api/v1/verify/${encodeURIComponent(final.agreement_number)}`);
   check(byNumber.found === false, 'the agreement number cannot be used to enumerate the register (AC-17)');
 
-  step('12. The completed agreement is frozen (BR-005)');
+  step('14. The completed agreement is frozen (BR-005)');
   const edit = await fetch(`${API}/api/v1/agreements/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens.agent}` },
@@ -276,7 +313,7 @@ async function main(): Promise<void> {
   });
   check(edit.status === 409, 'content edits are refused after completion');
 
-  step('13. Save the final signed PDF');
+  step('15. Save the final signed PDF');
   const download = await call('GET', `/api/v1/agreements/${id}/document`, { token: tokens.agent });
   const pdf = Buffer.from(await (await fetch(download.url)).arrayBuffer());
   await fs.mkdir(OUT, { recursive: true });

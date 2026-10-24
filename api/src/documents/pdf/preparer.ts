@@ -3,23 +3,27 @@ import { PDFDocument, StandardFonts, PDFName, PDFString } from 'pdf-lib';
 import { parseDocument, findObjectContaining } from './pdf-objects';
 
 /**
- * The reserved signature regions, in workflow order (SRS v1.1 §8.1, DEC-024).
+ * The reserved signature regions, in workflow order (SRS v1.1 §8.1, DEC-033).
  *
- * Two, not three: the Employee approval step was removed, so no widget is
- * reserved for it. They are still placed before any signature exists — adding a
- * field later would need an incremental update carrying an AcroForm change, which
- * some readers treat as a suspicious post-signature modification.
+ * Three again: DEC-033 restored the GTIDS employee as a signer between the agent
+ * and the MD. All three are placed before any signature exists — adding a field
+ * later would need an incremental update carrying an AcroForm change, which some
+ * readers treat as a suspicious post-signature modification.
  */
 export const SIGNATURE_FIELDS = {
   AGENT: 'GTIDS_Agent',
+  EMPLOYEE: 'GTIDS_Employee',
   MD: 'GTIDS_MD',
 } as const;
 
+// Three across the page rather than two. The widths below are narrowed to match,
+// so the middle widget does not overlap its neighbours on A4.
 const WIDGET_GEOMETRY = [
-  { name: SIGNATURE_FIELDS.AGENT, x: 60 },
-  { name: SIGNATURE_FIELDS.MD, x: 300 },
+  { name: SIGNATURE_FIELDS.AGENT, x: 40 },
+  { name: SIGNATURE_FIELDS.EMPLOYEE, x: 215 },
+  { name: SIGNATURE_FIELDS.MD, x: 390 },
 ];
-const WIDGET = { y: 90, w: 200, h: 70 };
+const WIDGET = { y: 90, w: 165, h: 70 };
 
 export interface PreparedDocument {
   buffer: Buffer;
@@ -28,7 +32,7 @@ export interface PreparedDocument {
 }
 
 /**
- * Stage 2: reserve the three signature widgets on the flat PDF, before any
+ * Stage 2: reserve all three signature widgets on the flat PDF, before any
  * signature exists.
  *
  * They are all added up front for two reasons. Adding a field later would itself

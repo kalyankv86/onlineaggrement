@@ -16,8 +16,14 @@ export const AuditEvent = {
   DOCUMENT_VIEWED: 'DOCUMENT_VIEWED',
   AGENT_SIGN_INITIATED: 'AGENT_SIGN_INITIATED',
   AGENT_SIGNED: 'AGENT_SIGNED',
+  // DEC-004's attested approval. Retained for agreements executed before DEC-024.
   EMPLOYEE_APPROVED: 'EMPLOYEE_APPROVED',
   EMPLOYEE_REJECTED: 'EMPLOYEE_REJECTED',
+  // DEC-033 — the employee signs. Distinct from EMPLOYEE_APPROVED above, which
+  // records a click rather than a signature; the audit trail must not conflate
+  // the two, because they carry different evidentiary weight.
+  EMPLOYEE_SIGN_INITIATED: 'EMPLOYEE_SIGN_INITIATED',
+  EMPLOYEE_SIGNED: 'EMPLOYEE_SIGNED',
   MD_SIGN_INITIATED: 'MD_SIGN_INITIATED',
   MD_SIGNED: 'MD_SIGNED',
   MD_REJECTED: 'MD_REJECTED',

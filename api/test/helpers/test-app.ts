@@ -198,20 +198,40 @@ export async function seedFixtures(knex: Knex): Promise<SeededFixtures> {
         document_source: 'UPLOAD',
         // DEC-028 — Accounts receives the completion copy.
         accounts_email: 'accounts@test.gtids',
+        // DEC-033/034 — the employee who countersigns. This agreement type has no
+        // bank, so the designation lives on the type.
+        employee_signer_user_id: users.employee!.id,
       })
       .returning('*');
 
-    // DEC-024 — only two stages wait on a human now.
-    await knex('stage_slas').insert(
-      ['READY_FOR_AGENT_SIGNATURE', 'PENDING_MD_SIGNATURE'].map(
-        (stage) => ({
-          agreement_type_id: type.id,
-          stage,
-          sla_days: 14,
-          reminder_days: knex.raw(`'{3,7,12}'::integer[]`),
-        }),
-      ),
-    );
+  }
+
+  /*
+   * Applied whether the type was just created or left over from an earlier run.
+   *
+   * Setting these only on creation meant a database seeded before DEC-033 kept a
+   * type with no designated signer, and every test then failed on a validation
+   * error that was correct — the fixture was stale, not the code.
+   */
+  await knex('agreement_types')
+    .where('id', type.id)
+    .update({ employee_signer_user_id: users.employee!.id });
+
+  // DEC-033 — three stages wait on a human again.
+  for (const stage of [
+    'READY_FOR_AGENT_SIGNATURE',
+    'PENDING_EMPLOYEE_SIGNATURE',
+    'PENDING_MD_SIGNATURE',
+  ]) {
+    await knex('stage_slas')
+      .insert({
+        agreement_type_id: type.id,
+        stage,
+        sla_days: 14,
+        reminder_days: knex.raw(`'{3,7,12}'::integer[]`),
+      })
+      .onConflict(['agreement_type_id', 'stage'])
+      .ignore();
   }
 
   let templateVersion = await knex('agreement_template_versions')

@@ -57,14 +57,15 @@ describe('document pipeline', () => {
       expect(() => parseDocument(prepared)).not.toThrow();
     });
 
-    it('reserves both signature widgets before any signature exists', () => {
+    it('reserves all three signature widgets before any signature exists', () => {
       const text = prepared.toString('latin1');
       for (const field of Object.values(SIGNATURE_FIELDS)) {
         expect(text).toContain(`/T (${field})`);
       }
-      // DEC-024 removed the employee approval step, so no widget is reserved for it.
-      expect(Object.keys(SIGNATURE_FIELDS)).toEqual(['AGENT', 'MD']);
-      expect(text).not.toContain('GTIDS_Employee');
+      // DEC-033 restored the employee as a signer, so there are three again, and
+      // in workflow order — the order decides which widget each signature fills.
+      expect(Object.keys(SIGNATURE_FIELDS)).toEqual(['AGENT', 'EMPLOYEE', 'MD']);
+      expect(text).toContain('GTIDS_Employee');
       expect(findSignatures(prepared)).toHaveLength(0);
     });
 

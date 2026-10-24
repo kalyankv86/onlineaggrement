@@ -38,6 +38,20 @@ export class SigningController {
     );
   }
 
+  /** DEC-033 — the GTIDS employee signs between the agent and the MD. */
+  @Post('agreements/:id/sign/employee')
+  async initiateEmployeeSignature(
+    @Param('id') id: string,
+    @Body() dto: SignInitiateDto,
+    @CurrentUser() actor: Principal,
+    @Req() req: Request,
+  ) {
+    return this.signing.initiateSignature(
+      { agreementId: id, party: 'EMPLOYEE', presentedDocumentHash: dto.documentHash, actor },
+      clientContext(req),
+    );
+  }
+
   @Post('agreements/:id/sign/md')
   async initiateMdSignature(
     @Param('id') id: string,

@@ -25,7 +25,7 @@ jest.setTimeout(120_000);
  * document pipeline. Only the ESP is a double, and it is a faithful one: hash-based
  * signing, HMAC-signed callbacks, real PKCS#7.
  */
-describe('Agent → MD end to end (DEC-024)', () => {
+describe('Agent → Employee → MD end to end (DEC-033)', () => {
   let app: INestApplication;
   let knex: Knex;
   let close: () => Promise<void>;
@@ -82,6 +82,30 @@ describe('Agent → MD end to end (DEC-024)', () => {
       .set(headers)
       .send(body.toString())
       .expect(200);
+  }
+
+  /**
+   * Drive one party's whole ceremony and wait for the agreement to reach `until`.
+   *
+   * Extracted when DEC-033 added a third signer: the same twelve lines had been
+   * copied per party per test, which is how the employee step came to be missing
+   * from several of them at once.
+   */
+  async function signAs(
+    party: 'agent' | 'employee' | 'md',
+    id: string,
+    until: string,
+  ): Promise<void> {
+    const initiate = await http
+      .post(`/api/v1/agreements/${id}/sign/${party}`)
+      .set(auth(party))
+      .send({ documentHash: await currentHash(id) })
+      .expect(201);
+    await completeCeremony(initiate.body.transactionId);
+    await waitFor(
+      async () => (await knex('agreements').where('id', id).first()).status === until,
+      { label: `${party} signature to land` },
+    );
   }
 
   async function currentHash(agreementId: string): Promise<string> {
@@ -152,7 +176,15 @@ describe('Agent → MD end to end (DEC-024)', () => {
 
       const agreement = await http.get(`/api/v1/agreements/${id}`).set(auth('agent')).expect(200);
       expect(agreement.body.status).toBe('READY_FOR_AGENT_SIGNATURE');
-      expect(agreement.body.parties).toHaveLength(3);
+      // AGENT, the designated EMPLOYEE, MD, and ACCOUNTS (DEC-033).
+      expect(agreement.body.parties).toHaveLength(4);
+      // The employee is attached from configuration, in signing order, and was
+      // never named in the request — the agent cannot choose who countersigns.
+      const employeeParty = agreement.body.parties.find(
+        (p: { party_type: string }) => p.party_type === 'EMPLOYEE',
+      );
+      expect(employeeParty.email).toBe(fixtures.users.employee.email);
+      expect(employeeParty.signing_order).toBe(2);
       expect(agreement.body.stamp.denomination).toBe('100.00');
       expect(agreement.body.expires_at).toBeTruthy(); // SLA clock started (FR-021)
     });
@@ -215,7 +247,7 @@ describe('Agent → MD end to end (DEC-024)', () => {
     });
   });
 
-  describe('AC-03 — the sequence is mandatory (DEC-024)', () => {
+  describe('AC-03 — the sequence is mandatory (DEC-033)', () => {
     it('MD cannot sign before the agent has signed (BR-003)', async () => {
       const { id, documentHash } = await setUpToGenerated();
       const res = await http
@@ -225,35 +257,63 @@ describe('Agent → MD end to end (DEC-024)', () => {
         .expect(409);
       expect(res.body.error.rule).toMatch(/BR-003/);
     });
+
+    it('employee cannot sign before the agent has signed (BR-002)', async () => {
+      const { id, documentHash } = await setUpToGenerated();
+      const res = await http
+        .post(`/api/v1/agreements/${id}/sign/employee`)
+        .set(auth('employee'))
+        .send({ documentHash })
+        .expect(409);
+      expect(res.body.error.rule).toMatch(/BR-002/);
+    });
+
+    it('MD cannot sign after the agent but before the employee (BR-003)', async () => {
+      // The gap DEC-033 introduced: the agreement is signed once and waiting, and
+      // the MD is the wrong next party. Previously this state did not exist.
+      const { id } = await setUpToGenerated();
+      await signAs('agent', id, 'PENDING_EMPLOYEE_SIGNATURE');
+
+      const res = await http
+        .post(`/api/v1/agreements/${id}/sign/md`)
+        .set(auth('md'))
+        .send({ documentHash: await currentHash(id) })
+        .expect(409);
+      expect(res.body.error.rule).toMatch(/BR-003/);
+    });
   });
 
   describe('the complete happy path', () => {
-    it('runs Agent → MD and ends COMPLETED with every guarantee intact', async () => {
+    it('runs Agent → Employee → MD and ends COMPLETED with every guarantee intact', async () => {
       const { id, number } = await setUpToGenerated();
 
       // ── Agent signs (FR-011) ────────────────────────────────────────────────
-      const initiate = await http
-        .post(`/api/v1/agreements/${id}/sign/agent`)
+      await signAs('agent', id, 'PENDING_EMPLOYEE_SIGNATURE');
+
+      const afterAgent = await http
+        .get(`/api/v1/agreements/${id}/verify-signatures`)
         .set(auth('agent'))
-        .send({ documentHash: await currentHash(id) })
-        .expect(201);
-      expect(initiate.body.ceremonyUrl).toBeTruthy();
-      expect(initiate.body.byteRangeDigest).toHaveLength(64);
-
-      await completeCeremony(initiate.body.transactionId);
-      await waitFor(
-        async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
-        { label: 'agent signature to land' },
-      );
-
-      const afterAgent = await http.get(`/api/v1/agreements/${id}/verify-signatures`).set(auth('agent')).expect(200);
+        .expect(200);
       expect(afterAgent.body.count).toBe(1);
       expect(afterAgent.body.allValid).toBe(true);
 
-      // No eSign transaction is consumed by anyone but the two signers.
-      const midCount = await knex('esign_transactions').where('agreement_id', id).count<{ count: string }[]>('* as count');
-      expect(Number(midCount[0].count)).toBe(1);
+      // ── GTIDS employee signs (FR-012, DEC-033) ──────────────────────────────
+      await signAs('employee', id, 'PENDING_MD_SIGNATURE');
+
+      // The agent's signature is still valid after a second was appended — that
+      // is the whole point of the incremental-update design (SRS §8).
+      const afterEmployee = await http
+        .get(`/api/v1/agreements/${id}/verify-signatures`)
+        .set(auth('employee'))
+        .expect(200);
+      expect(afterEmployee.body.count).toBe(2);
+      expect(afterEmployee.body.allValid).toBe(true);
+
+      // One ceremony per signer, no more: two so far, none spent by anyone else.
+      const midCount = await knex('esign_transactions')
+        .where('agreement_id', id)
+        .count<{ count: string }[]>('* as count');
+      expect(Number(midCount[0].count)).toBe(2);
 
       // ── MD signs (FR-013) ───────────────────────────────────────────────────
       const mdInitiate = await http
@@ -274,12 +334,15 @@ describe('Agent → MD end to end (DEC-024)', () => {
       expect(agreement.verification_token).toHaveLength(32);
 
       const finalReport = await http.get(`/api/v1/agreements/${id}/verify-signatures`).set(auth('md')).expect(200);
-      expect(finalReport.body.count).toBe(2);
+      expect(finalReport.body.count).toBe(3);
       expect(finalReport.body.allValid).toBe(true);
       expect(finalReport.body.signatureState).toBe('FINAL');
-      // The agent's signature covers a prefix; the MD's covers the whole file.
+      // Only the last signature covers the whole file; the earlier two each cover
+      // the prefix that existed when they were applied. That is what lets a later
+      // signature be appended without invalidating an earlier one (SRS §8).
       expect(finalReport.body.signatures[0].coversWholeFile).toBe(false);
-      expect(finalReport.body.signatures[1].coversWholeFile).toBe(true);
+      expect(finalReport.body.signatures[1].coversWholeFile).toBe(false);
+      expect(finalReport.body.signatures[2].coversWholeFile).toBe(true);
 
       // ── AC-06 — the final document is retrievable ───────────────────────────
       const doc = await http.get(`/api/v1/agreements/${id}/document`).set(auth('agent')).expect(200);
@@ -287,15 +350,22 @@ describe('Agent → MD end to end (DEC-024)', () => {
       const downloaded = await http.get(doc.body.url.replace(/^https?:\/\/[^/]+/, '')).expect(200);
       expect(downloaded.body.subarray(0, 5).toString()).toBe('%PDF-');
 
-      // ── AC-07 — one completion mail per party, three in total ───────────────
+      // ── AC-07 — one completion mail per party, four in total ────────────────
       const recipients = await knex('notification_recipients')
         .join('notifications', 'notifications.id', 'notification_recipients.notification_id')
         .where({ 'notifications.agreement_id': id, 'notifications.event_type': 'COMPLETED' })
         .select('notification_recipients.email', 'notification_recipients.status');
-      // DEC-028 — the executing party, the MD, and Accounts.
-      expect(recipients).toHaveLength(3);
+      // DEC-028 as amended by DEC-033 — all three signers, plus Accounts. The
+      // employee is here because they signed; a signer must be able to obtain the
+      // document carrying their own signature.
+      expect(recipients).toHaveLength(4);
       expect(recipients.map((r) => r.email).sort()).toEqual(
-        ['accounts@test.gtids', fixtures.users.agent.email, fixtures.users.md.email].sort(),
+        [
+          'accounts@test.gtids',
+          fixtures.users.agent.email,
+          fixtures.users.employee.email,
+          fixtures.users.md.email,
+        ].sort(),
       );
       expect(recipients.every((r) => r.status === 'QUEUED')).toBe(true); // dispatch is post-commit
 
@@ -361,15 +431,16 @@ describe('Agent → MD end to end (DEC-024)', () => {
       await completeCeremony(initiate.body.transactionId);
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
+          (await knex('agreements').where('id', id).first()).status ===
+          'PENDING_EMPLOYEE_SIGNATURE',
         { label: 'agent signature' },
       );
 
       // The document has changed since it was composed — it now carries the
-      // agent's signature, so the MD must act on the new bytes.
+      // agent's signature, so the next signer must act on the new bytes.
       const res = await http
-        .post(`/api/v1/agreements/${id}/sign/md`)
-        .set(auth('md'))
+        .post(`/api/v1/agreements/${id}/sign/employee`)
+        .set(auth('employee'))
         .send({ documentHash: hashAtGeneration })
         .expect(409);
 
@@ -393,7 +464,8 @@ describe('Agent → MD end to end (DEC-024)', () => {
 
       await waitFor(
         async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
+          (await knex('agreements').where('id', id).first()).status ===
+          'PENDING_EMPLOYEE_SIGNATURE',
         { label: 'first callback' },
       );
       const transitionsAfterFirst = await knex('workflow_transitions').where('agreement_id', id);
@@ -404,7 +476,7 @@ describe('Agent → MD end to end (DEC-024)', () => {
       const transitionsAfterReplay = await knex('workflow_transitions').where('agreement_id', id);
       expect(transitionsAfterReplay).toHaveLength(transitionsAfterFirst.length);
       expect((await knex('agreements').where('id', id).first()).status).toBe(
-        'PENDING_MD_SIGNATURE',
+        'PENDING_EMPLOYEE_SIGNATURE',
       );
     });
 
@@ -439,18 +511,8 @@ describe('Agent → MD end to end (DEC-024)', () => {
   describe('AC-12 / FR-015a — rejection and correction', () => {
     it('rejects, then opens version 2 preserving version 1 evidence', async () => {
       const { id } = await setUpToGenerated();
-      const initiate = await http
-        .post(`/api/v1/agreements/${id}/sign/agent`)
-        .set(auth('agent'))
-        .send({ documentHash: await currentHash(id) })
-        .expect(201);
-      await completeCeremony(initiate.body.transactionId);
-      await waitFor(
-        async () =>
-          (await knex('agreements').where('id', id).first()).status === 'PENDING_MD_SIGNATURE',
-        { label: 'agent signature' },
-      );
-
+            await signAs('agent', id, 'PENDING_EMPLOYEE_SIGNATURE');
+      await signAs('employee', id, 'PENDING_MD_SIGNATURE');
       const v1Versions = await knex('agreement_versions').where('agreement_id', id);
       const v1Hashes = v1Versions.map((v) => v.document_hash);
 
@@ -474,7 +536,9 @@ describe('Agent → MD end to end (DEC-024)', () => {
       const history = await knex('agreement_version_history').where('agreement_id', id).first();
       expect(history.version_no).toBe(1);
       expect(history.status_at_close).toBe('REJECTED');
-      expect(history.voided_signature_count).toBe(1);
+      // Both the agent's and the employee's signatures are voided by the rejection
+      // (DEC-033); under the two-party flow only one existed to void.
+      expect(history.voided_signature_count).toBe(2);
 
       const stillThere = await knex('agreement_versions').where('agreement_id', id);
       expect(stillThere.map((v) => v.document_hash)).toEqual(expect.arrayContaining(v1Hashes));
@@ -561,7 +625,7 @@ describe('Agent → MD end to end (DEC-024)', () => {
 
       expect(await jobs.reconcileSigningTransactions()).toBe(1);
       expect((await knex('agreements').where('id', id).first()).status).toBe(
-        'PENDING_MD_SIGNATURE',
+        'PENDING_EMPLOYEE_SIGNATURE',
       );
     });
   });

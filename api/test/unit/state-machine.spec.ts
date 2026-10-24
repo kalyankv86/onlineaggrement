@@ -46,48 +46,96 @@ describe('agreement state machine', () => {
     });
   });
 
-  describe('DEC-024 — the employee approval step no longer exists', () => {
-    it('offers no transition into the employee states', () => {
-      // The states remain in the enum so historical agreements stay readable, but
-      // nothing can reach them: that is what makes the step gone rather than
-      // merely skipped by convention.
-      const employeeStates: AgreementState[] = [
+  describe('DEC-033 — the employee signs, and the approval states stay dead', () => {
+    it('leaves DEC-004\'s attested-approval states unreachable', () => {
+      // DEC-033 restored the step as a *signature*. The approval states remain in
+      // the enum so agreements executed under DEC-004 stay readable, but nothing
+      // may reach them again — otherwise a signature could be recorded under a
+      // state name that says someone merely clicked approve.
+      const approvalStates: AgreementState[] = [
         'PENDING_EMPLOYEE_APPROVAL',
         'EMPLOYEE_APPROVING',
         'EMPLOYEE_APPROVED',
       ];
       for (const action of WORKFLOW_ACTIONS) {
-        expect(employeeStates).not.toContain(TRANSITIONS[action].to);
+        expect(approvalStates).not.toContain(TRANSITIONS[action].to);
       }
     });
 
-    it('an employee has no action available in any state', () => {
-      for (const state of AGREEMENT_STATES) {
-        expect(availableActions(state, ['EMPLOYEE'])).toEqual([]);
+    it('routes the agent signature to the employee, not to the MD', () => {
+      expect(TRANSITIONS.ADVANCE_TO_EMPLOYEE.from).toEqual(['AGENT_SIGNED']);
+      expect(TRANSITIONS.ADVANCE_TO_EMPLOYEE.to).toBe('PENDING_EMPLOYEE_SIGNATURE');
+      expect(TRANSITIONS.ADVANCE_TO_MD.from).toEqual(['EMPLOYEE_SIGNED']);
+    });
+
+    it('makes each waiting state reachable by exactly one edge (BR-002, BR-003)', () => {
+      // This is what enforces the order. Not a guard that could be forgotten: a
+      // second inbound edge would be a way to skip a signer, so the count matters.
+      for (const waiting of [
+        'PENDING_EMPLOYEE_SIGNATURE',
+        'PENDING_MD_SIGNATURE',
+      ] as AgreementState[]) {
+        const inbound = WORKFLOW_ACTIONS.filter((a) => TRANSITIONS[a].to === waiting);
+        // RETRY_* edges come from SIGNATURE_FAILED, which is recovery, not a skip.
+        const forward = inbound.filter((a) => !a.startsWith('RETRY_'));
+        expect(forward).toHaveLength(1);
       }
+    });
+
+    it('refuses an employee signature before the agent has signed', () => {
+      for (const before of [
+        'DRAFT',
+        'READY_FOR_AGENT_SIGNATURE',
+        'AGENT_SIGNING',
+      ] as AgreementState[]) {
+        expect(() =>
+          assertTransition(before, 'EMPLOYEE_SIGN_INITIATE', ['EMPLOYEE']),
+        ).toThrow();
+      }
+    });
+
+    it('refuses an MD signature before the employee has signed', () => {
+      for (const before of ['AGENT_SIGNED', 'PENDING_EMPLOYEE_SIGNATURE'] as AgreementState[]) {
+        expect(() => assertTransition(before, 'MD_SIGN_INITIATE', ['MD'])).toThrow();
+      }
+    });
+
+    it('gives the employee an action only where one is due', () => {
+      const withAction = AGREEMENT_STATES.filter(
+        (state) => availableActions(state, ['EMPLOYEE']).length > 0,
+      );
+      // Only where the agreement is actually waiting on them, plus recovery.
+      // Notably NOT the MD's states: having signed, rejecting is no longer theirs.
+      expect(withAction.sort()).toEqual(
+        ['EMPLOYEE_SIGNING', 'PENDING_EMPLOYEE_SIGNATURE', 'SIGNATURE_FAILED'].sort(),
+      );
     });
   });
 
-  describe('BR-003 as amended — MD signing is unreachable before the agent signs', () => {
+  describe('BR-003 — MD signing is unreachable before the earlier parties sign', () => {
     const beforeAgentSigned: AgreementState[] = [
       'DRAFT',
       'READY_FOR_AGENT_SIGNATURE',
       'AGENT_SIGNING',
+      // DEC-033 — and now also before the employee has signed.
+      'AGENT_SIGNED',
+      'PENDING_EMPLOYEE_SIGNATURE',
+      'EMPLOYEE_SIGNING',
     ];
 
     it.each(beforeAgentSigned)('MD cannot start signing from %s', (state) => {
       expectRefusal(() => assertTransition(state, 'MD_SIGN_INITIATE', ['MD']), InvalidTransitionError);
     });
 
-    it('PENDING_MD_SIGNATURE has exactly one inbound edge, from AGENT_SIGNED', () => {
+    it('PENDING_MD_SIGNATURE has exactly one inbound edge, from EMPLOYEE_SIGNED', () => {
       const inbound = WORKFLOW_ACTIONS.filter(
         (a) => TRANSITIONS[a].to === 'PENDING_MD_SIGNATURE' && a !== 'RETRY_MD_SIGNATURE',
       );
       expect(inbound).toEqual(['ADVANCE_TO_MD']);
-      expect(TRANSITIONS.ADVANCE_TO_MD.from).toEqual(['AGENT_SIGNED']);
+      expect(TRANSITIONS.ADVANCE_TO_MD.from).toEqual(['EMPLOYEE_SIGNED']);
     });
 
-    it('MD can sign once the agent signature has advanced the agreement', () => {
+    it('MD can sign once the employee signature has advanced the agreement', () => {
       expect(assertTransition('PENDING_MD_SIGNATURE', 'MD_SIGN_INITIATE', ['MD']).to).toBe(
         'MD_SIGNING',
       );
@@ -197,7 +245,10 @@ describe('agreement state machine', () => {
         ['DRAFT', 'GENERATE', ['AGENT']],
         ['READY_FOR_AGENT_SIGNATURE', 'AGENT_SIGN_INITIATE', ['AGENT']],
         ['AGENT_SIGNING', 'AGENT_SIGN_SUCCEED', ['SYSTEM']],
-        ['AGENT_SIGNED', 'ADVANCE_TO_MD', ['SYSTEM']],
+        ['AGENT_SIGNED', 'ADVANCE_TO_EMPLOYEE', ['SYSTEM']],
+        ['PENDING_EMPLOYEE_SIGNATURE', 'EMPLOYEE_SIGN_INITIATE', ['EMPLOYEE']],
+        ['EMPLOYEE_SIGNING', 'EMPLOYEE_SIGN_SUCCEED', ['SYSTEM']],
+        ['EMPLOYEE_SIGNED', 'ADVANCE_TO_MD', ['SYSTEM']],
         ['PENDING_MD_SIGNATURE', 'MD_SIGN_INITIATE', ['MD']],
         ['MD_SIGNING', 'MD_SIGN_SUCCEED', ['SYSTEM']],
       ];

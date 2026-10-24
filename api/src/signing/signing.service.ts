@@ -7,16 +7,25 @@ import { DocumentsService } from '../documents/documents.service';
 import { EsignService } from '../esign/esign.service';
 import { StampsService } from '../stamps/stamps.service';
 import { AgreementsService } from '../agreements/agreements.service';
-import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationsService,
+  type NotificationEvent,
+  type PartyType,
+} from '../notifications/notifications.service';
 import { AuditService, AuditEvent } from '../audit/audit.service';
+
+/** AuditEvent is a const object, so its values need extracting as a type. */
+type AuditEventName = (typeof AuditEvent)[keyof typeof AuditEvent];
 import { Principal } from '../auth/auth.service';
 import {
   ConflictError,
   ForbiddenError,
   StaleDocumentError,
   SignatureIntegrityError,
+  ValidationError,
 } from '../common/errors/domain.errors';
 import { generateVerificationToken } from '../common/util/crypto.util';
+import type { AgreementState, WorkflowAction } from '../workflow/state-machine';
 
 export interface ActionContext {
   ipAddress?: string;
@@ -31,6 +40,75 @@ export interface ActionContext {
  * table (state-machine.ts). What this service owns is the coupling between a state
  * change and its document effect, so the two can never disagree.
  */
+/**
+ * Everything that differs between the three signing parties, in one place.
+ *
+ * This was previously expressed as `party === 'AGENT' ? … : …` at six separate
+ * points. That shape is safe with two parties and quietly wrong with three: every
+ * one of those expressions would have treated the employee as the MD — embedding
+ * their signature in the MD's widget, auditing it as MD_SIGNED and completing the
+ * agreement one signature early. None of it would have thrown.
+ *
+ * `advance` is the edge taken once the signature succeeds; null means this
+ * signature completes the agreement.
+ */
+interface SigningPartySpec {
+  initiate: WorkflowAction;
+  succeed: WorkflowAction;
+  fail: WorkflowAction;
+  signingState: AgreementState;
+  advance: WorkflowAction | null;
+  initiatedEvent: AuditEventName;
+  signedEvent: AuditEventName;
+  /** Appears in the PDF signature's /Reason. */
+  reason: string;
+  /** Signatures already on the document when this party signs. */
+  signaturesBefore: number;
+  /** Who is told once this signature lands. */
+  notifyOnSigned: { eventType: NotificationEvent; recipients: PartyType[] } | null;
+}
+
+export type SigningParty = 'AGENT' | 'EMPLOYEE' | 'MD';
+
+const SIGNING_PARTY: Record<SigningParty, SigningPartySpec> = {
+  AGENT: {
+    initiate: 'AGENT_SIGN_INITIATE',
+    succeed: 'AGENT_SIGN_SUCCEED',
+    fail: 'AGENT_SIGN_FAIL',
+    signingState: 'AGENT_SIGNING',
+    advance: 'ADVANCE_TO_EMPLOYEE',
+    initiatedEvent: AuditEvent.AGENT_SIGN_INITIATED,
+    signedEvent: AuditEvent.AGENT_SIGNED,
+    reason: 'Agent execution',
+    signaturesBefore: 0,
+    notifyOnSigned: { eventType: 'AGENT_SIGNED', recipients: ['EMPLOYEE'] },
+  },
+  EMPLOYEE: {
+    initiate: 'EMPLOYEE_SIGN_INITIATE',
+    succeed: 'EMPLOYEE_SIGN_SUCCEED',
+    fail: 'EMPLOYEE_SIGN_FAIL',
+    signingState: 'EMPLOYEE_SIGNING',
+    advance: 'ADVANCE_TO_MD',
+    initiatedEvent: AuditEvent.EMPLOYEE_SIGN_INITIATED,
+    signedEvent: AuditEvent.EMPLOYEE_SIGNED,
+    reason: 'Verified and executed on behalf of GTIDS',
+    signaturesBefore: 1,
+    notifyOnSigned: { eventType: 'EMPLOYEE_SIGNED', recipients: ['MD'] },
+  },
+  MD: {
+    initiate: 'MD_SIGN_INITIATE',
+    succeed: 'MD_SIGN_SUCCEED',
+    fail: 'MD_SIGN_FAIL',
+    signingState: 'MD_SIGNING',
+    advance: null, // completes the agreement
+    initiatedEvent: AuditEvent.MD_SIGN_INITIATED,
+    signedEvent: AuditEvent.MD_SIGNED,
+    reason: 'Final execution on behalf of GTIDS',
+    signaturesBefore: 2,
+    notifyOnSigned: null, // completion notifies everyone, in finalize()
+  },
+};
+
 @Injectable()
 export class SigningService {
   private readonly log = new Logger(SigningService.name);
@@ -59,7 +137,7 @@ export class SigningService {
   async initiateSignature(
     params: {
       agreementId: string;
-      party: 'AGENT' | 'MD';
+      party: SigningParty;
       presentedDocumentHash: string;
       actor: Principal;
     },
@@ -78,14 +156,15 @@ export class SigningService {
 
     // The state change happens first: an open ceremony must be visible to everyone
     // else immediately, so a second signer cannot start a parallel one.
+    const spec = SIGNING_PARTY[params.party];
+
     await this.workflow.transition({
       agreementId: agreement.id,
-      action: params.party === 'AGENT' ? 'AGENT_SIGN_INITIATE' : 'MD_SIGN_INITIATE',
+      action: spec.initiate,
       actorId: params.actor.userId,
       actorRoles: params.actor.roles,
       trigger: 'USER',
-      auditEvent:
-        params.party === 'AGENT' ? AuditEvent.AGENT_SIGN_INITIATED : AuditEvent.MD_SIGN_INITIATED,
+      auditEvent: spec.initiatedEvent,
       auditData: { documentHash: version.document_hash },
       auditContext: ctx,
     });
@@ -96,7 +175,7 @@ export class SigningService {
       sourceFileKey: version.file_key,
       field: params.party,
       signerName: party.name,
-      reason: `${params.party === 'AGENT' ? 'Agent execution' : 'Final execution on behalf of GTIDS'} of ${agreement.agreement_number}`,
+      reason: `${spec.reason} of ${agreement.agreement_number}`,
       location: agreement.data?.placeOfExecution
         ? String(agreement.data.placeOfExecution)
         : 'India',
@@ -152,7 +231,18 @@ export class SigningService {
     const transaction = await this.esign.getTransaction(transactionId);
     const agreement = await this.workflow.get(transaction.agreement_id);
     const party = await this.knex('agreement_parties').where('id', transaction.party_id).first();
-    const field: 'AGENT' | 'MD' = party.party_type === 'AGENT' ? 'AGENT' : 'MD';
+    /*
+     * Read the party type straight through rather than mapping anything not-AGENT
+     * onto MD. An unrecognised value must stop the callback, not be absorbed into
+     * the MD's widget.
+     */
+    const field = party.party_type as SigningParty;
+    const spec = SIGNING_PARTY[field];
+    if (!spec) {
+      throw new ValidationError(
+        `Party type ${party.party_type} is not a signing party`,
+      );
+    }
 
     const providerStatus = await this.esign.getProviderStatus(transaction.provider_transaction_id);
     if (providerStatus.status !== 'SIGNED') {
@@ -166,8 +256,7 @@ export class SigningService {
 
     const der = await this.esign.getSignature(transaction.provider_transaction_id);
 
-    // Signatures already on the document before this one.
-    const signaturesBefore = field === 'AGENT' ? 0 : 1;
+    const signaturesBefore = spec.signaturesBefore;
 
     let result;
     try {
@@ -208,23 +297,26 @@ export class SigningService {
 
         await trx('agreement_parties').where('id', party.id).update({ status: 'ACTED' });
 
-        if (field === 'AGENT') {
-          // The signature succeeding and the agreement moving to the MD are one
-          // consequence, not two decisions — they commit together (DEC-024).
+        if (spec.advance) {
+          /*
+           * The signature succeeding and the agreement moving to the next signer
+           * are one consequence, not two decisions — they commit together, so an
+           * agreement can never be left signed but waiting on nobody.
+           */
           await this.workflow.transitionChain(
             [
               {
                 agreementId: agreement.id,
-                action: 'AGENT_SIGN_SUCCEED',
+                action: spec.succeed,
                 actorId: party.user_id ?? null,
                 actorRoles: ['SYSTEM'],
                 trigger: 'PROVIDER_CALLBACK',
-                auditEvent: AuditEvent.AGENT_SIGNED,
+                auditEvent: spec.signedEvent,
                 auditData: { documentHash: stored.documentHash, transactionId },
               },
               {
                 agreementId: agreement.id,
-                action: 'ADVANCE_TO_MD',
+                action: spec.advance,
                 actorId: null,
                 actorRoles: ['SYSTEM'],
                 trigger: 'SYSTEM',
@@ -232,19 +324,26 @@ export class SigningService {
             ],
             trx,
           );
-          await this.notifications.enqueue(
-            { agreementId: agreement.id, eventType: 'AGENT_SIGNED', recipients: ['MD'] },
-            trx,
-          );
+          if (spec.notifyOnSigned) {
+            await this.notifications.enqueue(
+              {
+                agreementId: agreement.id,
+                eventType: spec.notifyOnSigned.eventType,
+                recipients: spec.notifyOnSigned.recipients,
+              },
+              trx,
+            );
+          }
         } else {
+          // The last signature. Completion mints the public verification token.
           await this.workflow.transition(
             {
               agreementId: agreement.id,
-              action: 'MD_SIGN_SUCCEED',
+              action: spec.succeed,
               actorId: party.user_id ?? null,
               actorRoles: ['SYSTEM'],
               trigger: 'PROVIDER_CALLBACK',
-              auditEvent: AuditEvent.MD_SIGNED,
+              auditEvent: spec.signedEvent,
               auditData: { documentHash: stored.documentHash, transactionId },
               patch: {
                 completed_at: new Date(),
@@ -299,11 +398,14 @@ export class SigningService {
         ip_address: ctx.ipAddress ?? null,
       });
 
-      if (agreement.status === 'AGENT_SIGNING' || agreement.status === 'MD_SIGNING') {
+      const signingStates = Object.values(SIGNING_PARTY).map((p) => p.signingState);
+      if (signingStates.includes(agreement.status)) {
         await this.workflow.transition(
           {
             agreementId: agreement.id,
-            action: agreement.status === 'AGENT_SIGNING' ? 'AGENT_SIGN_FAIL' : 'MD_SIGN_FAIL',
+            action: (Object.values(SIGNING_PARTY).find(
+            (p) => p.signingState === agreement.status,
+          ) as SigningPartySpec).fail,
             actorId: null,
             actorRoles: ['SYSTEM'],
             trigger: 'PROVIDER_CALLBACK',
@@ -323,9 +425,17 @@ export class SigningService {
     ctx: ActionContext = {},
   ): Promise<void> {
     const agreement = await this.workflow.get(params.agreementId);
-    // Only the MD can reject now: the transition table offers REJECT from the MD
-    // states alone (DEC-024).
-    const party = await this.agreements.party(agreement.id, 'MD');
+
+    /*
+     * Which rejection edge applies follows from the state, not from the caller's
+     * claim about who they are: the employee's states take EMPLOYEE_REJECT, the
+     * MD's take REJECT. assertTransition then checks the actor holds that role, so
+     * an employee cannot reject from the MD's states by asking for the MD's edge.
+     */
+    const employeeStates = ['PENDING_EMPLOYEE_SIGNATURE', 'EMPLOYEE_SIGNING'];
+    const byEmployee = employeeStates.includes(agreement.status);
+    const action: WorkflowAction = byEmployee ? 'EMPLOYEE_REJECT' : 'REJECT';
+    const party = await this.agreements.party(agreement.id, byEmployee ? 'EMPLOYEE' : 'MD');
 
     await this.knex.transaction(async (trx) => {
       await trx('signature_events').insert({
@@ -342,7 +452,7 @@ export class SigningService {
       await this.workflow.transition(
         {
           agreementId: agreement.id,
-          action: 'REJECT',
+          action,
           actorId: params.actor.userId,
           actorRoles: params.actor.roles,
           trigger: 'USER',
@@ -396,12 +506,18 @@ export class SigningService {
       trx,
     );
 
-    // DEC-028 — the executing party, the MD who signed it, and Accounts.
+    /*
+     * DEC-028 as amended by DEC-033 — every party that signed, plus Accounts.
+     *
+     * The employee is included because they signed: a signer who cannot obtain
+     * the document carrying their own signature would have to ask someone else
+     * for it. Accounts signs nothing and is notified for payment processing.
+     */
     await this.notifications.enqueue(
       {
         agreementId,
         eventType: 'COMPLETED',
-        recipients: ['AGENT', 'MD', 'ACCOUNTS'],
+        recipients: ['AGENT', 'EMPLOYEE', 'MD', 'ACCOUNTS'],
         payload: { documentHash: finalHash },
       },
       trx,

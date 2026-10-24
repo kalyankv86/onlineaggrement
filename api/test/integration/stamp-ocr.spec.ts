@@ -211,15 +211,15 @@ describe('Composition and signing of an uploaded agreement (DEC-025, DEC-027)', 
     ).rejects.toThrow(/Unsupported agreement format/);
   });
 
-  it('carries two signatures on the composed document, both valid (AC-10, DEC-024)', async () => {
+  it('carries three signatures on the composed document, all valid (AC-10, DEC-033)', async () => {
     const composed = await composer.compose(await agreementDocument(), await stampPaperScan());
     const prepared = await preparer.prepare(composed.buffer);
 
-    // Two widgets now, not three — the Employee approval step is gone.
+    // Three widgets again — DEC-033 restored the employee as a signer.
     const text = prepared.buffer.toString('latin1');
     expect(text).toContain(`/T (${SIGNATURE_FIELDS.AGENT})`);
+    expect(text).toContain(`/T (${SIGNATURE_FIELDS.EMPLOYEE})`);
     expect(text).toContain(`/T (${SIGNATURE_FIELDS.MD})`);
-    expect(text).not.toContain('GTIDS_Employee');
 
     const agent = await appendSignature(prepared.buffer, {
       fieldName: SIGNATURE_FIELDS.AGENT,
@@ -231,7 +231,18 @@ describe('Composition and signing of an uploaded agreement (DEC-025, DEC-027)', 
     expect(agent.buffer.subarray(0, prepared.buffer.length).equals(prepared.buffer)).toBe(true);
     expect(verifier.verify(agent.buffer).allValid).toBe(true);
 
-    const md = await appendSignature(agent.buffer, {
+    const employee = await appendSignature(agent.buffer, {
+      fieldName: SIGNATURE_FIELDS.EMPLOYEE,
+      name: 'S. Patra',
+      reason: 'Verified and executed on behalf of GTIDS',
+      location: 'Bhubaneswar',
+      sign: (c) => signDetached(c, signingIdentityFor('S. Patra')),
+    });
+    // The agent's signature survives the employee's being appended after it.
+    expect(verifier.verify(employee.buffer).allValid).toBe(true);
+    expect(verifier.verify(employee.buffer).count).toBe(2);
+
+    const md = await appendSignature(employee.buffer, {
       fieldName: SIGNATURE_FIELDS.MD,
       name: 'Dr. A. K. Mohanty',
       reason: 'Final execution',
@@ -240,9 +251,11 @@ describe('Composition and signing of an uploaded agreement (DEC-025, DEC-027)', 
     });
 
     const report = verifier.verify(md.buffer);
-    expect(report.count).toBe(2);
+    expect(report.count).toBe(3);
     expect(report.allValid).toBe(true);
+    // Only the last covers the whole file; the earlier two cover their prefixes.
     expect(report.signatures[0].coversWholeFile).toBe(false);
-    expect(report.signatures[1].coversWholeFile).toBe(true);
+    expect(report.signatures[1].coversWholeFile).toBe(false);
+    expect(report.signatures[2].coversWholeFile).toBe(true);
   });
 });

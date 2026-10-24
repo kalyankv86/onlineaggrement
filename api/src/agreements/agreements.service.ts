@@ -6,7 +6,12 @@ import { WorkflowService } from '../workflow/workflow.service';
 import { DocumentsService } from '../documents/documents.service';
 import { StampsService } from '../stamps/stamps.service';
 import { StorageDriver } from '../documents/storage/storage.driver';
-import { NotFoundError, ValidationError, ConflictError } from '../common/errors/domain.errors';
+import {
+  NotFoundError,
+  ValidationError,
+  ConflictError,
+  ForbiddenError,
+} from '../common/errors/domain.errors';
 import { financialYear } from '../common/util/financial-year';
 import { Principal } from '../auth/auth.service';
 import { Role, availableActions } from '../workflow/state-machine';
@@ -15,10 +20,20 @@ export interface CreateAgreementInput {
   agreementTypeId: string;
   templateVersionId?: string;
   placeOfExecutionState?: string;
+  /**
+   * Only honoured for an actor who belongs to no bank — an administrator creating
+   * an agreement on an agent's behalf. An agent's own bank always takes
+   * precedence, so this cannot be used to execute another bank's paper.
+   */
+  bankId?: string;
   data: Record<string, unknown>;
   parties: {
-    // ACCOUNTS is added by the service, never by the caller — it signs nothing.
-    partyType: 'AGENT' | 'MD' | 'ACCOUNTS';
+    /**
+     * The caller supplies AGENT and MD only. EMPLOYEE comes from the bank's or the
+     * type's designated signer and ACCOUNTS from the type, because neither may be
+     * chosen by the person creating the agreement.
+     */
+    partyType: 'AGENT' | 'MD';
     userId?: string;
     name: string;
     email: string;
@@ -26,6 +41,16 @@ export interface CreateAgreementInput {
     identityReference?: string;
   }[];
 }
+
+/** A party row as written to the database, including the two the service adds. */
+type PartyRow = {
+  partyType: 'AGENT' | 'EMPLOYEE' | 'MD' | 'ACCOUNTS';
+  userId?: string;
+  name: string;
+  email: string;
+  mobile?: string;
+  identityReference?: string;
+};
 
 @Injectable()
 export class AgreementsService {
@@ -69,13 +94,34 @@ export class AgreementsService {
       this.assertTemplateVariables(templateVersion.variables_schema, input.data);
     }
 
-    // DEC-024 — two signing parties. Accounts is added automatically below and is
-    // never supplied by the caller, because it signs nothing.
+    /*
+     * DEC-033 — three signing parties, but only two are supplied by the caller.
+     *
+     * The EMPLOYEE is resolved from configuration below, not accepted from the
+     * request: an agent must not be able to nominate who countersigns their own
+     * instrument. ACCOUNTS is likewise added automatically, because it signs
+     * nothing.
+     */
     for (const required of ['AGENT', 'MD'] as const) {
       if (!input.parties.some((p) => p.partyType === required)) {
         throw new ValidationError(`Agreement requires a ${required} party`);
       }
     }
+    // Typed out of the input, but a hand-built request can still carry it.
+    if (input.parties.some((p) => (p.partyType as string) === 'EMPLOYEE')) {
+      throw new ValidationError(
+        'The GTIDS employee signer is set by an administrator and cannot be supplied per agreement',
+      );
+    }
+
+    /*
+     * Which bank this agreement belongs to, and therefore which text and which
+     * employee signer apply. Taken from the agent's own user record rather than
+     * the request, so an agent cannot execute another bank's agreement; an
+     * administrator creating one on their behalf names the bank explicitly.
+     */
+    const bank = await this.resolveBank(input, actor);
+    const employeeSigner = await this.resolveEmployeeSigner(bank, type);
 
     return this.knex.transaction(async (trx) => {
       const { rows } = await trx.raw('SELECT next_agreement_number(?, ?) AS number', [
@@ -95,6 +141,7 @@ export class AgreementsService {
           place_of_execution_state: input.placeOfExecutionState ?? null,
           party_access_mode: type.party_access_mode,
           data: JSON.stringify(input.data),
+          bank_id: bank?.id ?? null,
           created_by: actor.userId,
         })
         .returning('*');
@@ -106,7 +153,21 @@ export class AgreementsService {
        * the agreement rather than read from configuration at send time, so the
        * record shows who was notified even if the configured mailbox later changes.
        */
-      const parties = [...input.parties];
+      const parties: PartyRow[] = [...input.parties];
+
+      /*
+       * The designated employee is recorded as a party on the agreement, for the
+       * same reason Accounts is: the record must show who was required to sign
+       * even after the designation changes. Resolving it at signing time instead
+       * would silently rewrite history for agreements already in flight.
+       */
+      parties.push({
+        partyType: 'EMPLOYEE',
+        userId: employeeSigner.id,
+        name: employeeSigner.full_name,
+        email: employeeSigner.email,
+      });
+
       if (type.accounts_email && !parties.some((p) => p.partyType === 'ACCOUNTS')) {
         parties.push({
           partyType: 'ACCOUNTS',
@@ -481,6 +542,70 @@ export class AgreementsService {
   }
 
   /** Required template variables must be present before a document is produced. */
+  /**
+   * The bank this agreement belongs to, or null for a GTIDS engagement.
+   *
+   * An agent's own bank always wins over anything in the request: that is what
+   * stops one bank's agent executing another bank's paper.
+   */
+  private async resolveBank(
+    input: { bankId?: string },
+    actor: Principal,
+  ): Promise<{ id: string; name: string; employee_signer_user_id: string | null } | null> {
+    const actingUser = await this.knex('users').where('id', actor.userId).first();
+
+    if (actingUser?.bank_id) {
+      if (input.bankId && input.bankId !== actingUser.bank_id) {
+        throw new ForbiddenError(
+          'You may only create agreements for your own bank',
+          'DEC-031',
+        );
+      }
+      return this.bankOrThrow(actingUser.bank_id);
+    }
+
+    return input.bankId ? this.bankOrThrow(input.bankId) : null;
+  }
+
+  private async bankOrThrow(id: string) {
+    const bank = await this.knex('banks').where('id', id).first();
+    if (!bank) throw new NotFoundError('Bank', id);
+    if (!bank.is_active) {
+      throw new ValidationError(`Bank ${bank.name} is not active`);
+    }
+    return bank;
+  }
+
+  /**
+   * The GTIDS employee who must countersign: the bank's designated signer, or the
+   * agreement type's for an engagement with no bank.
+   *
+   * Refused loudly when neither is set. The alternative — falling back to any
+   * user holding the EMPLOYEE role — would pick a signer by row order, which is
+   * not a defensible way to decide who executes an instrument.
+   */
+  private async resolveEmployeeSigner(
+    bank: { id: string; name: string; employee_signer_user_id: string | null } | null,
+    type: { id: string; code: string; employee_signer_user_id?: string | null },
+  ): Promise<{ id: string; full_name: string; email: string }> {
+    const userId = bank?.employee_signer_user_id ?? type.employee_signer_user_id ?? null;
+    if (!userId) {
+      throw new ValidationError(
+        bank
+          ? `No GTIDS employee signer is designated for ${bank.name}. An administrator must set one before agreements can be created for this bank.`
+          : `No GTIDS employee signer is designated for agreement type ${type.code}.`,
+      );
+    }
+
+    const user = await this.knex('users').where({ id: userId, is_active: true }).first();
+    if (!user) {
+      throw new ValidationError(
+        'The designated GTIDS employee signer is inactive or no longer exists. An administrator must designate another.',
+      );
+    }
+    return user;
+  }
+
   private assertTemplateVariables(
     schema: { required?: string[] } | null,
     data: Record<string, unknown>,

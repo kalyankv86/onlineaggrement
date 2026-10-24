@@ -6,6 +6,22 @@ import { sha256 } from '../common/util/crypto.util';
 import { NotFoundError, SignatureIntegrityError } from '../common/errors/domain.errors';
 import { PdfRenderer } from './pdf/renderer';
 import { DocumentComposer } from './pdf/composer';
+
+/** The three reserved signature widgets, keyed as the workflow names them. */
+export type SignatureFieldName = 'AGENT' | 'EMPLOYEE' | 'MD';
+
+/**
+ * What the document becomes once each party has signed.
+ *
+ * Only the MD's signature produces FINAL: that is what distinguishes a fully
+ * executed instrument from one still awaiting a signer, and a reader uses it to
+ * know how many signatures the document should carry.
+ */
+const DOCUMENT_STATE_AFTER: Record<SignatureFieldName, DocType & SignatureState> = {
+  AGENT: 'AGENT_SIGNED',
+  EMPLOYEE: 'EMPLOYEE_SIGNED',
+  MD: 'FINAL',
+};
 import { PdfPreparer, SIGNATURE_FIELDS } from './pdf/preparer';
 import { PdfVerifier, VerificationReport } from './pdf/verifier';
 import {
@@ -22,11 +38,19 @@ export type DocType =
   | 'GENERATED_UNSIGNED'
   | 'PREPARED_UNSIGNED'
   | 'AGENT_SIGNED'
+  /** DEC-004's attested click. Only on documents executed before DEC-024. */
   | 'EMPLOYEE_ATTESTED'
+  /** DEC-033 — the employee's cryptographic signature. */
+  | 'EMPLOYEE_SIGNED'
   | 'FINAL'
   | 'AUDIT_CERTIFICATE';
 
-export type SignatureState = 'UNSIGNED' | 'AGENT_SIGNED' | 'EMPLOYEE_ATTESTED' | 'FINAL';
+export type SignatureState =
+  | 'UNSIGNED'
+  | 'AGENT_SIGNED'
+  | 'EMPLOYEE_ATTESTED'
+  | 'EMPLOYEE_SIGNED'
+  | 'FINAL';
 
 const FILE_NAME: Record<DocType, string> = {
   STAMP_SCAN: 'stamp-original.pdf',
@@ -36,6 +60,7 @@ const FILE_NAME: Record<DocType, string> = {
   PREPARED_UNSIGNED: 'prepared-unsigned.pdf',
   AGENT_SIGNED: 'agent-signed.pdf',
   EMPLOYEE_ATTESTED: 'employee-attested.pdf',
+  EMPLOYEE_SIGNED: 'employee-signed.pdf',
   FINAL: 'final-md-signed.pdf',
   AUDIT_CERTIFICATE: 'audit-certificate.pdf',
 };
@@ -123,7 +148,7 @@ export class DocumentsService {
     agreementNumber: string;
     version: number;
     sourceFileKey: string;
-    field: 'AGENT' | 'MD';
+    field: SignatureFieldName;
     signerName: string;
     reason: string;
     location: string;
@@ -137,7 +162,10 @@ export class DocumentsService {
     const before = this.verifier.verify(source);
 
     const slot = prepareSignatureSlot(source, {
-      fieldName: params.field === 'AGENT' ? SIGNATURE_FIELDS.AGENT : SIGNATURE_FIELDS.MD,
+      // Keyed, not branched. `field === 'AGENT' ? AGENT : MD` put the employee's
+      // signature in the MD's widget, and the fault only surfaced one step later
+      // as "GTIDS_MD is already signed" when the MD tried to sign.
+      fieldName: SIGNATURE_FIELDS[params.field],
       name: params.signerName,
       reason: params.reason,
       location: params.location,
@@ -176,7 +204,7 @@ export class DocumentsService {
       agreementNumber: string;
       version: number;
       pendingFileKey: string;
-      field: 'AGENT' | 'MD';
+      field: SignatureFieldName;
       der: Buffer;
       expectedDigest: string;
       signaturesBefore: number;
@@ -215,8 +243,8 @@ export class DocumentsService {
       {
         ...params,
         doc: signed,
-        docType: params.field === 'AGENT' ? 'AGENT_SIGNED' : 'FINAL',
-        signatureState: params.field === 'AGENT' ? 'AGENT_SIGNED' : 'FINAL',
+        docType: DOCUMENT_STATE_AFTER[params.field],
+        signatureState: DOCUMENT_STATE_AFTER[params.field],
       },
       db,
     );

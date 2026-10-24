@@ -387,3 +387,107 @@ and it is the same question already raised as DEC-015.
 **Needed:** a determination from GTIDS legal, before any agreement is executed for
 real. Changing the composition now is inexpensive; changing it after execution is
 not.
+
+---
+
+## F. Multi-bank operation and the restored employee signature (24 Oct 2026)
+
+Raised by GTIDS: agents belong to multiple banks, each bank has its own agreement
+text, and a GTIDS employee signs after the agent. Four decisions, confirmed by
+GTIDS on 24 Oct 2026.
+
+### DEC-031 — Banks are a first-class entity; agents belong to one
+**Severity:** BLOCKER · **Status:** IMPLEMENTED · **Affects:** FR-002, FR-026
+
+Agents act for different banks and must execute their own bank's text. Modelling
+a bank as an agreement *type* was rejected: the type's code is embedded in every
+agreement number (FR-026), so a type per bank would push the institution list
+into the numbering scheme permanently, and it still would not express which
+agents belong to which bank.
+
+**Decided:** a `banks` table, `users.bank_id` for agents, and `agreements.bank_id`
+copied at creation. Copied rather than resolved through the user later, so an
+agent who moves institutions does not retrospectively change which bank an
+executed agreement was with. An agent's own bank always overrides any bank named
+in a request, which is what prevents cross-bank execution.
+
+### DEC-032 — Each bank's agreement is a fixed PDF held against the bank
+**Severity:** HIGH · **Status:** IMPLEMENTED · **Affects:** FR-009, DEC-025
+
+**Decided (GTIDS, 24 Oct 2026):** a fixed PDF per bank, uploaded and versioned by
+an administrator, rather than a template with merge fields. Templates remain
+available for GTIDS's own engagements and may be added per bank later.
+
+The agent never uploads. The document is a property of the bank, so one agent
+cannot execute different text from another agent at the same institution. At most
+one document per bank may be active, enforced by a partial unique index: if two
+were active, which text an agent executed would depend on row order.
+
+### DEC-033 — The GTIDS employee signs again, cryptographically
+**Severity:** BLOCKER · **Status:** IMPLEMENTED · **Reverses:** DEC-024
+
+**Decided (GTIDS, 24 Oct 2026):** the employee applies a third eSign signature
+between the agent and the MD. This reverses DEC-024, which removed the step on
+12 Aug 2026, and goes further than DEC-004, which had specified an attested click.
+
+New states (`PENDING_EMPLOYEE_SIGNATURE`, `EMPLOYEE_SIGNING`, `EMPLOYEE_SIGNED`)
+rather than reuse of the `EMPLOYEE_APPROVAL` family, and a new document state
+`EMPLOYEE_SIGNED` beside `EMPLOYEE_ATTESTED`. State names persist in the audit
+trail permanently, so recording a signature under a name meaning "approved" would
+misdescribe a legal record. The approval states stay in the enum and stay
+unreachable, because agreements executed under DEC-004 remain valid records.
+
+Ordering is structural, not guarded: each waiting state has exactly one inbound
+edge, `AGENT_SIGNED → PENDING_EMPLOYEE_SIGNATURE → EMPLOYEE_SIGNED →
+PENDING_MD_SIGNATURE`. Rejection is split into `EMPLOYEE_REJECT` and `REJECT`,
+because one rule combining both parties' states would have let the employee
+reject an agreement after signing it themselves.
+
+**Still open for GTIDS legal:** DEC-024 was taken partly to simplify the legal
+position. Restoring a third signature reopens that question.
+
+### DEC-034 — The employee signer is designated by an administrator, per bank
+**Severity:** HIGH · **Status:** IMPLEMENTED · **Affects:** FR-012
+
+**Decided:** `banks.employee_signer_user_id`, falling back to
+`agreement_types.employee_signer_user_id` for engagements with no bank. Resolved
+at creation and recorded as a party on the agreement, so the record shows who was
+required to sign even after the designation changes.
+
+The agent cannot nominate the employee, and supplying an EMPLOYEE party in a
+creation request is refused: an agent choosing who countersigns their own
+instrument would defeat the point of the step. Where no signer is designated,
+agreement creation is **refused with a message naming the bank** rather than
+falling back to any user holding the EMPLOYEE role — picking a signer by row
+order is not a defensible way to decide who executes an instrument.
+
+### DEC-035 — DigiLocker for KYC, eSign for signatures
+**Severity:** BLOCKER · **Status:** OPEN · **Owner:** GTIDS Management
+
+**Decided (GTIDS, 24 Oct 2026):** Aadhaar eSign applies the signature; DigiLocker
+is used to fetch the agent's Aadhaar or PAN for identity verification first.
+
+These are **two separate integrations with two separate registrations**, and the
+distinction matters: DigiLocker is a document wallet and cannot sign anything. A
+procurement that treats them as one thing will deliver a document locker and no
+signatures. eSign remains DEC-002, still the production blocker; DigiLocker
+remains DEC-017, whose claim that a "module skeleton ships in v1" overstates what
+exists — `api/src/digilocker/` is an empty directory.
+
+### DEC-036 — A per-agent agreement identifier
+**Severity:** MEDIUM · **Status:** OPEN · **Owner:** GTIDS
+
+Raised by GTIDS, 24 Oct 2026: "once signed we should have a unique identifier for
+each agreement for each agent."
+
+Already in place: `agreement_number` (`GTIDS/2026-27/SVCAGR/000025`) is globally
+unique per agreement, and `verification_token` is a unique 32-character public
+reference minted at completion. What does **not** exist is any bank or agent
+identity *within* the identifier, or a per-agent sequence.
+
+**Needs a decision before implementing**, because changing the numbering scheme
+after agreements are executed is expensive: whether the requirement is (a) the
+existing number is sufficient and only needs to be searchable by agent, (b) the
+bank code should appear in the number, or (c) each agent needs their own sequence
+(`UBI/AGENT-0042/003`). Interacts with DEC-012 and DEC-013, both still open on
+numbering and retention.
